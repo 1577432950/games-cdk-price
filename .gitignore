@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 打包产物（体积大且可重新生成）
+build/
+dist/
+*.exe
+*.spec.tmp
+
+# 运行期产物：登录态 cookie 绝对不能入库
+*.log
+debug_last.json
+result.json
+report.html
+state/
+*_state.json
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

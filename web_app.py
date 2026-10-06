@@ -111,6 +111,13 @@ a{color:#1668dc;text-decoration:none;word-break:break-all} a:hover{text-decorati
 .bar i{display:block;height:100%;width:35%;background:#1668dc;animation:mv 1.1s infinite}
 @keyframes mv{0%{margin-left:-35%}100%{margin-left:100%}}
 .tip{color:var(--muted);font-size:12px;margin-top:10px}
+footer{border-top:1px solid var(--bd);background:#fbfcfd;padding:14px 24px 26px;color:#7a828c;font-size:12px;line-height:1.85}
+footer .fw{max-width:1180px;margin:0 auto}
+footer b{color:#5a626c;font-weight:600}
+footer .ftitle{display:flex;align-items:center;gap:8px;font-size:13px;color:#444;font-weight:600;margin-bottom:8px}
+footer .ftitle::before{content:"";width:3px;height:13px;background:#1668dc;border-radius:2px}
+footer p{margin:0 0 5px}
+footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#98a0aa}
 </style></head><body>
 <header><h1>游戏 CDK 比价</h1>
 <div class="sub">输入游戏名，一次比价 Humble / Fanatical / 绿人GMG / 杉果 / 凤凰 / 匹歪 / 2Game / Gamesplanet / Loaded / Kinguin，统一折算人民币</div>
@@ -146,6 +153,13 @@ a{color:#1668dc;text-decoration:none;word-break:break-all} a:hover{text-decorati
 </div>
 <div id="note" class="tip"></div>
 </main>
+<footer><div class="fw">
+  <div class="ftitle">声明</div>
+  <p>本工具是<b>完全免费、开源</b>的本地比价小工具，无任何收费项目、无会员、无广告，也不收集你的任何搜索记录或个人信息——你的查询只在你自己的电脑和这些游戏商店之间完成。</p>
+  <p>页面展示的价格、区服、库存均由各商店公开页面实时抓取并自动换算，<b>仅供参考</b>。受汇率波动、区域定价、限时促销、页面改版等因素影响，可能与商店实际结算金额存在出入，<b>请以商店下单页的最终价格为准</b>。</p>
+  <p>本工具与文中提及的任何游戏平台、发行商均无关联，所有商标、游戏名称及素材版权归其各自所有者所有。"授权"与"C2C 灰市"标签系依据公开信息作出的<b>粗略分类</b>，不构成对任何渠道的官方背书、推荐或担保。请你自行判断渠道可靠性与账号风险，因购买、激活、退款等产生的任何纠纷或损失，本工具作者不承担责任。</p>
+  <p class="fx">MIT License · 仅供学习交流使用 · 请勿用于商业用途或高频抓取</p>
+</div></footer>
 <script>
 const $=s=>document.querySelector(s);
 let job=null, timer=null;

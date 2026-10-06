@@ -98,6 +98,11 @@ th,td{border-bottom:1px solid var(--bd);padding:9px 10px;text-align:left;vertica
 th{background:#fafbfc;font-weight:600;color:#555;position:sticky;top:0}
 td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .best{color:var(--accent);font-weight:700}
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{background:#f0f4f9;color:#1668dc}
+th.sortable i{font-style:normal;color:#bfc8d4;margin-left:3px;font-size:11px}
+th.sortable.on{color:#1668dc}
+th.sortable.on i{color:#1668dc}
 .tag{font-size:11px;padding:1px 5px;border-radius:3px;white-space:nowrap}
 .auth{background:#eaf6ec;color:#237804} .c2c{background:#fff1f0;color:#a8071a}
 tr.none td{color:#999}
@@ -133,8 +138,10 @@ a{color:#1668dc;text-decoration:none;word-break:break-all} a:hover{text-decorati
 <div class="card" id="wrap" style="display:none;padding:0;overflow:hidden">
   <table><thead><tr>
     <th style="width:90px">站点</th><th style="width:78px">渠道</th><th style="width:80px">版本</th><th>商品名</th>
-    <th style="width:90px" class="num">原价 ¥</th><th style="width:110px" class="num">现价</th>
-    <th style="width:100px" class="num">折合 ¥</th><th style="width:330px">网址</th>
+    <th style="width:90px" class="num sortable" data-k="list">原价 ¥<i></i></th>
+    <th style="width:110px" class="num sortable" data-k="price">现价<i></i></th>
+    <th style="width:100px" class="num sortable" data-k="cny">折合 ¥<i></i></th>
+    <th style="width:330px">网址</th>
   </tr></thead><tbody id="tb"></tbody></table>
 </div>
 <div id="note" class="tip"></div>
@@ -168,17 +175,40 @@ function poll(){
     $('#go').disabled=false;
     if(d.state==='error'){$('#st').className='status err';$('#st').textContent=d.status;return}
     $('#st').className='status';
-    render(d.rows||[],d.status||'');
+    $('#wrap').style.display='block';
+    render(d.rows||[]);
   });
 }
 
 function tag(risk){
   return risk==='C2C' ? '<span class="tag c2c">C2C 灰市</span>' : '<span class="tag auth">授权</span>';
 }
-function render(rows,status){
+
+let DATA=[], SORT={k:'cny', dir:1};   // 默认按折合人民币升序
+
+function sorted(){
+  const {k,dir}=SORT;
+  // 空价格行永远沉底，不参与排序
+  const rows=DATA.filter(r=>r.cny!==null);
+  const none=DATA.filter(r=>r.cny===null);
+  rows.sort((a,b)=>{
+    let x=a[k], y=b[k];
+    if(k==='price'){ x=a.cny; y=b.cny; }        // 现价跨币种不可直接比，按折合价排
+    if(x===null||x===undefined) x=Infinity;
+    if(y===null||y===undefined) y=Infinity;
+    if(x===y) return (a.cny||0)-(b.cny||0);
+    return (x-y)*dir;
+  });
+  return rows.concat(none);
+}
+
+function render(rows){
+  DATA=rows;
   const tb=$('#tb'); tb.innerHTML='';
-  const best=(rows.find(r=>r.cny!==null)||{}).cny;
-  for(const r of rows){
+  // ★ 永远标记全场最低价，不随排序方式变化
+  let best=null;
+  for(const r of DATA) if(r.cny!==null && (best===null || r.cny<best)) best=r.cny;
+  for(const r of sorted()){
     const tr=document.createElement('tr');
     if(r.cny===null){
       tr.className='none';
@@ -195,9 +225,30 @@ function render(rows,status){
     tr.addEventListener('dblclick',()=>{if(r.url)window.open(r.url,'_blank')});
     tb.appendChild(tr);
   }
-  $('#wrap').style.display='block';
-  $('#st').textContent=status||`共 ${rows.filter(r=>r.cny!==null).length} 条报价`;
+  const n=DATA.filter(r=>r.cny!==null).length;
+  $('#st').textContent=SORT.k==='cny'
+    ? `共 ${n} 条报价（按折合人民币${SORT.dir>0?'升序':'降序'}，点表头可改）`
+    : `共 ${n} 条报价`;
 }
+
+function bindSort(){
+  document.querySelectorAll('th.sortable').forEach(th=>{
+    const k=th.dataset.k;
+    th.querySelector('i').textContent = (SORT.k===k) ? (SORT.dir>0?'▲':'▼') : '⇅';
+    th.classList.toggle('on', SORT.k===k);
+    th.onclick=()=>{
+      if(SORT.k===k) SORT.dir=-SORT.dir;
+      else { SORT.k=k; SORT.dir=1; }        // 换列时默认升序（便宜在前）
+      document.querySelectorAll('th.sortable').forEach(x=>{
+        const kk=x.dataset.k;
+        x.classList.toggle('on', kk===SORT.k);
+        x.querySelector('i').textContent = (kk===SORT.k) ? (SORT.dir>0?'▲':'▼') : '⇅';
+      });
+      render(DATA);
+    };
+  });
+}
+bindSort();
 __NOTE__
 </script></body></html>"""
 

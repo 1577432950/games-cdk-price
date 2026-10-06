@@ -40,7 +40,7 @@ def print_table(rows, kw, fx):
     print("-" * 96)
     if not rows:
         print("  没有抓到任何结果。检查关键词，或用 --en 指定英文名后重试。")
-    best = next((r["cny"] for r in rows if r["cny"]), None)
+    best = min((r["cny"] for r in rows if r["cny"]), default=None)
     for r in rows:
         risk = "C2C灰市" if r.get("risk") == "C2C" else "授权"
         if r["cny"] is None:
@@ -62,6 +62,24 @@ def print_table(rows, kw, fx):
     print()
 
 
+def resort(rows, key="cny", desc=False):
+    """重新排序：空价格行（提示/错误）固定沉底，不参与排序。"""
+    nice = [r for r in rows if r["cny"] is not None]
+    none = [r for r in rows if r["cny"] is None]
+    if key == "price":
+        # 现价跨币种不可直接比，仍按折合价排
+        nice.sort(key=lambda r: r["cny"], reverse=desc)
+    elif key == "list":
+        # 无原价的沉到有效值之后（升序降序都一样）
+        withlp = [r for r in nice if r["list"]]
+        nolp = [r for r in nice if not r["list"]]
+        withlp.sort(key=lambda r: (r["list"], r["cny"] or 0), reverse=desc)
+        nice = withlp + nolp
+    else:
+        nice.sort(key=lambda r: r["cny"], reverse=desc)
+    return nice + none
+
+
 def main():
     ap = argparse.ArgumentParser(description="游戏 CDK 多站比价（命令行版）")
     ap.add_argument("game", nargs="?", help="游戏名（中文或英文）")
@@ -75,6 +93,9 @@ def main():
     ap.add_argument("--fx", type=float, help="手动指定 1 USD 兑多少 CNY")
     ap.add_argument("--login", metavar="SITE", help="打开浏览器登录指定站点并保存登录态")
     ap.add_argument("--debug", action="store_true", help="把原始抓取结果存到 debug_last.json")
+    ap.add_argument("--sort", default="cny",
+                    help="排序依据：cny(折合人民币，默认) / price(现价) / list(原价)")
+    ap.add_argument("--desc", action="store_true", help="按价格从高到低排序（默认从低到高）")
     a = ap.parse_args()
 
     if a.login:
@@ -116,6 +137,7 @@ def main():
             "utf-8")
 
     rows = core.build_rows(results, errors, kw_cn, kw_en, fx, keep_all=a.all)
+    rows = resort(rows, a.sort, a.desc)
     if a.top:
         rows = rows[: a.top]
     print_table(rows, f"{kw_cn}" + (f" / {kw_en}" if kw_en and kw_en != kw_cn else ""), fx)

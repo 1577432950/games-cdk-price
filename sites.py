@@ -245,18 +245,47 @@ def gmg(kw, page_factory=None, **_):
 
 # ---------------------------------------------------------------- 杉果
 
-SONKWO_CFG = {
-    "card": ".SKC-sku-item-container.search-result-item-sku, .search-result-item-sku",
-    "title": [".sku-name", "[class*='sku-name']", "h3", "h2"],
-    "price": ".SKC-sale-price, [class*='sale-price']",
-    "list": ".SKC-list-price, [class*='list-price']",
+# 杉果搜索页的卡片 DOM 里没有商品链接（点击靠 JS 事件），拿不到详情页 URL。
+# 改用它的公开接口：searchWord 是唯一生效的搜索参数，返回体里带 id，
+# 详情页是 https://www.sonkwo.hk/sku/{id}（注意是 .hk 域名，.cn/sku/ 会 404）。
+SONKWO_API = "https://api.sonkwo.cn/product/sku/page"
+SONKWO_HEADERS = {
+    "User-Agent": UA,
+    "Accept": "application/json, text/plain, */*",
+    "Referer": "https://www.sonkwo.cn/",
+    "Origin": "https://www.sonkwo.cn",
 }
 
 
-def sonkwo(kw, page_factory=None, **_):
-    url = "https://www.sonkwo.cn/store/search?keyword=" + urllib.parse.quote(kw)
-    rows = browser_scrape(page_factory, url, SONKWO_CFG, wait=8000)
-    return _to_offers(rows, "https://www.sonkwo.cn")
+def sonkwo(kw, **_):
+    r = creq.get(SONKWO_API, params={"locale": "js", "searchWord": kw,
+                                     "page": 1, "page_size": 20},
+                 headers=SONKWO_HEADERS, timeout=25, impersonate="chrome")
+    data = (r.json() or {}).get("data") or {}
+    out = []
+    for it in data.get("list") or []:
+        names = it.get("skuNames") or {}
+        title = names.get("chs") or names.get("en") or names.get("default") or ""
+        names_en = names.get("en") or ""
+        # 中英文名都带上，方便后面相关度过滤命中
+        if names_en and names_en.lower() not in title.lower():
+            title = f"{title} {names_en}".strip()
+        sale = it.get("salePrice")
+        if not sale or sale >= 999999:      # 999999 是未上架占位价
+            continue
+        listp = it.get("listPrice")
+        if listp and listp >= 999999:
+            listp = None
+        sid = it.get("id")
+        out.append({
+            "title": title,
+            "price": float(sale),
+            "currency": "CNY",
+            "list_price": float(listp) if listp else None,
+            "url": f"https://www.sonkwo.hk/sku/{sid}" if sid else "https://www.sonkwo.cn/",
+            "note": "",
+        })
+    return out
 
 
 # ---------------------------------------------------------------- 凤凰游戏
@@ -408,7 +437,7 @@ SITES = {
     "humble":    {"name": "Humble",  "lang": "en", "kind": "http",    "fn": humble, "risk": "授权"},
     "fanatical": {"name": "Fanatical", "lang": "en", "kind": "browser", "fn": fanatical, "risk": "授权"},
     "gmg":       {"name": "绿人GMG", "lang": "en", "kind": "browser", "fn": gmg, "risk": "授权"},
-    "sonkwo":    {"name": "杉果",    "lang": "cn", "kind": "browser", "fn": sonkwo, "risk": "授权"},
+    "sonkwo":    {"name": "杉果",    "lang": "cn", "kind": "http",    "fn": sonkwo, "risk": "授权"},
     "fhyx":      {"name": "凤凰",    "lang": "cn", "kind": "browser", "fn": fhyx, "risk": "授权"},
     "steampy":   {"name": "匹歪",    "lang": "cn", "kind": "browser", "fn": steampy,
                   "risk": "C2C", "need_login": True},

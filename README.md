@@ -12,9 +12,10 @@
 - **一个输入框**：填中文名或英文名都行，英文名不填会自动尝试解析
 - **10 个站并发比价**：Humble / Fanatical / GMG / 杉果 / 凤凰 / 匹歪 / 2Game / Gamesplanet / Loaded / Kinguin
 - **统一折算人民币**：实时汇率，按折合价升序，最低价标红加 ★
+- **可点表头排序**：网页版点「原价 / 现价 / 折合 ¥」表头切换升序降序
+- **直达商品详情页**：每条结果都链到具体商品页，而不是搜索结果页
 - **区分授权渠道与灰市**：C2C 灰市（个人卖家挂单）会打红色标签，便宜但有风险，自己权衡
 - **自动过滤噪声**：剔掉周边、成品账号、共享账号，以及只命中一半关键词的无关商品
-- **结果可点**：每行都是可点击的商品链接，双击也能打开
 - **零 Web 框架依赖**：本地网页版用 stdlib `http.server` 实现
 
 ## ⚠️ 先读这段
@@ -74,11 +75,16 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | --- | --- |
 | `--en` | 英文名，境外站用它搜索 |
 | `--sites` | 只查指定站点（humble / fanatical / gmg / sonkwo / fhyx / steampy / 2game / gamesplanet / loaded / kinguin） |
+| `--sort` | 排序依据：`cny`（折合人民币，默认）/ `price`（现价）/ `list`（原价） |
+| `--desc` | 按价格从高到低排（默认从低到高） |
 | `--all` | 保留 DLC、原声、周边等全部结果（默认过滤周边和成品账号） |
 | `--top N` | 只看最便宜的 N 条 |
 | `--fx 7.2` | 手动指定美元汇率 |
 | `--login` | 保存某站登录态 |
 | `--debug` | 把原始抓取结果写到 `debug_last.json` 用于排错 |
+
+> 网页版直接**点表头**排序：点一下升序，再点一下降序。`★` 永远标全场最低价，不随排序变化；
+> 「无匹配结果」这类提示行固定沉在表格末尾。
 
 ## 各站实现现状
 
@@ -87,7 +93,7 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | Humble Bundle | 授权 | ✅ | 公开 JSON 接口 `/store/api/search`，无需浏览器，最快最稳 |
 | Fanatical | 授权 | ✅ | 浏览器渲染，卡片 `.hitCardStripe`；`/book/` `/comic/` 是漫画书，已过滤 |
 | 绿人 GMG | 授权 | ✅ | 浏览器渲染，读卡片 `ng-init` 里 UTF-16LE base64 的商品 JSON |
-| 杉果 | 授权 | ✅ | `/store/search?keyword=`（不是 `/search`），卡片 `.search-result-item-sku` |
+| 杉果 | 授权 | ✅ | 用公开接口 `api.sonkwo.cn/product/sku/page?searchWord=`（**`searchWord` 是唯一生效的搜索参数**），返回 JSON 带 `id`，详情页 `sonkwo.hk/sku/{id}`（注意是 **.hk** 域名，`.cn/sku/` 会 404） |
 | 凤凰 | 授权 | ✅ | **必须先打开首页再用搜索框提交**，直接访问搜索页会空白 |
 | 2Game | 授权 | ✅ | `div.form-product-card-2game-container` + `span.price-main`，中文站直接给人民币价 |
 | Gamesplanet | 授权 | ✅ | `div.game_list` + `span.price_current`（走 us 站，美元价） |

@@ -89,8 +89,18 @@ button{height:34px;padding:0 18px;border:0;border-radius:6px;background:#1668dc;
  font-size:14px;cursor:pointer;font-family:inherit}
 button:hover{background:#0f56b8} button:disabled{background:#b8c4d4;cursor:not-allowed}
 button.ghost{background:#fff;color:#444;border:1px solid var(--bd)}
-.chk{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;font-size:13px}
-.chk label{display:inline-flex;align-items:center;gap:5px;color:#333;margin:0}
+.chk{margin-top:14px}
+.chkhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
+.chkhead>span{font-size:12px;color:var(--muted)}
+.chkhead .allbox{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:#333;margin:0}
+.sites{display:grid;grid-template-columns:repeat(auto-fill,minmax(275px,1fr));gap:9px}
+.srow{border:1px solid var(--bd);border-radius:7px;padding:9px 11px;background:#fcfdfe;
+ transition:border-color .15s,box-shadow .15s}
+.srow:hover{border-color:#c3d4ea;box-shadow:0 1px 5px rgba(22,104,220,.07)}
+.slab{display:flex;align-items:center;gap:6px;margin:0;font-size:13px;color:#222}
+.slab b{font-weight:600}
+.sdesc{color:#8a9099;font-size:11.5px;line-height:1.6;margin-top:5px;padding-left:20px}
+.needlogin{font-size:11px;color:#b06b00;background:#fff7e6;border-radius:3px;padding:1px 5px;white-space:nowrap}
 .status{padding:10px 14px;border-radius:6px;background:#eef3fb;color:#31537e;font-size:13px}
 .status.err{background:#fdecea;color:#a8201a}
 table{width:100%;border-collapse:collapse;background:#fff;font-size:13px}
@@ -131,9 +141,10 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
     <div><button id="quit" class="ghost">退出程序</button></div>
   </div>
   <div class="chk">
-    <span>站点：</span>
-    __SITES__
-    <label><input id="all" type="checkbox"> 显示全部（含DLC/周边）</label>
+    <div class="chkhead"><span>比价站点</span>
+      <label class="allbox"><input id="all" type="checkbox"> 显示全部（含DLC/周边）</label>
+    </div>
+    <div class="sites">__SITES__</div>
   </div>
   <div class="tip">双击结果行可打开商品页。中国区没货的站点会显示「无匹配结果」，这不是抓取失败。<br>
   <span class="tag auth">授权</span> 官方授权零售，货源正规；
@@ -268,9 +279,20 @@ __NOTE__
 
 
 def build_page():
-    sites_html = "".join(
-        f'<label><input class="site" type="checkbox" value="{k}" checked> {c["name"]}</label>'
-        for k, c in SITES.items())
+    site_blocks = []
+    for k, c in SITES.items():
+        risk = ("授权" if c.get("risk") == "授权" else "C2C")
+        cls = "auth" if risk == "授权" else "c2c"
+        tip = c.get("need_login")
+        login = '<span class="needlogin">需登录</span>' if tip else ""
+        site_blocks.append(
+            f'<div class="srow">'
+            f'<label class="slab"><input class="site" type="checkbox" value="{k}" checked>'
+            f'<b>{c["name"]}</b>'
+            f'<span class="tag {cls}">{risk}</span>{login}</label>'
+            f'<div class="sdesc">{c.get("desc", "")}</div>'
+            f'</div>')
+    sites_html = "".join(site_blocks)
     note = "".join(f'$("#note").textContent+="※ {v} ";' for v in UNAVAILABLE.values())
     return PAGE.replace("__SITES__", sites_html).replace("__NOTE__", note)
 

@@ -423,48 +423,60 @@ def kinguin(kw, page_factory=None, **_):
 
 # lang: cn -> 用中文关键词搜索；en -> 用英文关键词搜索
 # kind: http -> 纯接口；browser -> 需要浏览器渲染
-def _mk(name, lang, cfg, base, risk="授权"):
+def _mk(name, lang, cfg, base, risk="授权", desc=""):
     """生成基于通用卡片抽取的适配器。"""
 
     def fn(kw, page_factory=None, **_):
         url = cfg["url"](kw)
         return _to_offers(browser_scrape(page_factory, url, cfg, wait=cfg.get("wait", 8000)), base)
 
-    return {"name": name, "lang": lang, "kind": "browser", "fn": fn, "risk": risk}
+    return {"name": name, "lang": lang, "kind": "browser", "fn": fn, "risk": risk,
+            "desc": desc, "site": base}
 
 
 SITES = {
-    "humble":    {"name": "Humble",  "lang": "en", "kind": "http",    "fn": humble, "risk": "授权"},
-    "fanatical": {"name": "Fanatical", "lang": "en", "kind": "browser", "fn": fanatical, "risk": "授权"},
-    "gmg":       {"name": "绿人GMG", "lang": "en", "kind": "browser", "fn": gmg, "risk": "授权"},
-    "sonkwo":    {"name": "杉果",    "lang": "cn", "kind": "http",    "fn": sonkwo, "risk": "授权"},
-    "fhyx":      {"name": "凤凰",    "lang": "cn", "kind": "browser", "fn": fhyx, "risk": "授权"},
+    "humble":    {"name": "Humble",  "lang": "en", "kind": "http",    "fn": humble, "risk": "授权",
+                  "desc": "美国老牌慈善捆绑包商店，月包/慈善包出名，常有独家优惠价。",
+                  "site": "https://www.humblebundle.com/"},
+    "fanatical": {"name": "Fanatical", "lang": "en", "kind": "browser", "fn": fanatical, "risk": "授权",
+                  "desc": "英国授权零售商，常年高折扣，Bundle 打包价低，适合捡漏。",
+                  "site": "https://www.fanatical.com/zh-hans/"},
+    "gmg":       {"name": "绿人GMG", "lang": "en", "kind": "browser", "fn": gmg, "risk": "授权",
+                  "desc": "Green Man Gaming，英国授权零售商，折扣券体系多，国区可下单。",
+                  "site": "https://www.greenmangaming.com/zh/"},
+    "sonkwo":    {"name": "杉果",    "lang": "cn", "kind": "http",    "fn": sonkwo, "risk": "授权",
+                  "desc": "国内老牌正版数字发行平台，人民币结算、中文客服，国区游戏最省心。",
+                  "site": "https://www.sonkwo.cn/"},
+    "fhyx":      {"name": "凤凰",    "lang": "cn", "kind": "browser", "fn": fhyx, "risk": "授权",
+                  "desc": "凤凰游戏商城（fhyx.com），国内正版零售，常见国产单机与国区激活码。",
+                  "site": "https://www.fhyx.com/"},
     "steampy":   {"name": "匹歪",    "lang": "cn", "kind": "browser", "fn": steampy,
-                  "risk": "C2C", "need_login": True},
+                  "risk": "C2C", "need_login": True,
+                  "desc": "SteamPY，国内 Steam 交易市场（C2C），玩家自由挂单，价格常最低但需登录。",
+                  "site": "https://steampy.com/"},
     # 以下为新增站
     "2game": _mk("2Game", "en", {
         "url": lambda kw: "https://www.2game.com/zh-cn/search?q=" + urllib.parse.quote(kw),
         "card": "div.form-product-card-2game-container",
         "title": [], "price": "span.price-main",
         "list": "span.price-old, [class*='old-price'], s, del",
-    }, "https://www.2game.com", "授权"),
+    }, "https://www.2game.com", "授权", desc="授权零售站，有中文站且直接显示人民币价，付款方便。"),
     "gamesplanet": _mk("Gamesplanet", "en", {
         "url": lambda kw: "https://us.gamesplanet.com/search?query=" + urllib.parse.quote(kw),
         "card": "div.game_list",
         "title": [], "price": "span.price_current",
         "list": "span.price_base strike, span.price_base",
-    }, "https://us.gamesplanet.com", "授权"),
+    }, "https://us.gamesplanet.com", "授权", desc="德国授权零售商，上架快、区域选区多，欧区价格参考。"),
     "loaded": _mk("Loaded(原CDKeys)", "en", {
         "url": lambda kw: "https://www.loaded.com/catalogsearch/result/?q=" + urllib.parse.quote(kw),
         "card": "div.product-info",
         "title": [], "price": "span.price",
         "list": "[class*='old-price'], span.old-price, s",
-    }, "https://www.loaded.com", "授权"),
-    "kinguin":   {"name": "Kinguin⚠", "lang": "en", "kind": "browser", "fn": kinguin, "risk": "C2C"},
+    }, "https://www.loaded.com", "授权", desc="原 CDKeys 改名而来，老牌授权站，全球区 key 库存全。"),
+    "kinguin":   {"name": "Kinguin⚠", "lang": "en", "kind": "browser", "fn": kinguin, "risk": "C2C",
+                  "desc": "Kinguin 灰色市场（C2C），个人卖家挂单，低价但存在黑卡 key 被回收风险。",
+                  "site": "https://www.kinguin.net/"},
 }
 
-# 小黑盒：网页端已无搜索入口，旧的 /game/search/web 接口对任何关键词都返回空列表
-UNAVAILABLE = {
-    "xiaoheihe": "小黑盒网页端已关闭站内搜索（xiaoheihe.cn 只剩下载落地页），"
-                 "旧接口 api.xiaoheihe.cn/game/search/web 对任意关键词均返回空，无法比价。",
-}
+# 已探测但无法接入的站点说明（暂时留空，有新的不可用站点再往里加）
+UNAVAILABLE = {}

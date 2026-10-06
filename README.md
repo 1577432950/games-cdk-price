@@ -15,6 +15,7 @@
 - **可点表头排序**：网页版点「原价 / 现价 / 折合 ¥」表头切换升序降序
 - **直达商品详情页**：每条结果都链到具体商品页，而不是搜索结果页
 - **区分授权渠道与灰市**：C2C 灰市（个人卖家挂单）会打红色标签，便宜但有风险，自己权衡
+- **站点卡片自带说明**：每个站在界面上都有一句定位描述，不用先去查它是干嘛的
 - **自动过滤噪声**：剔掉周边、成品账号、共享账号，以及只命中一半关键词的无关商品
 - **零 Web 框架依赖**：本地网页版用 stdlib `http.server` 实现
 
@@ -94,19 +95,18 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 
 ## 各站实现现状
 
-| 站点 | 渠道 | 状态 | 取数方式 |
-| --- | --- | --- | --- |
-| Humble Bundle | 授权 | ✅ | 公开 JSON 接口 `/store/api/search`，无需浏览器，最快最稳 |
-| Fanatical | 授权 | ✅ | 浏览器渲染，卡片 `.hitCardStripe`；`/book/` `/comic/` 是漫画书，已过滤 |
-| 绿人 GMG | 授权 | ✅ | 浏览器渲染，读卡片 `ng-init` 里 UTF-16LE base64 的商品 JSON |
-| 杉果 | 授权 | ✅ | 用公开接口 `api.sonkwo.cn/product/sku/page?searchWord=`（**`searchWord` 是唯一生效的搜索参数**），返回 JSON 带 `id`，详情页 `sonkwo.hk/sku/{id}`（注意是 **.hk** 域名，`.cn/sku/` 会 404） |
-| 凤凰 | 授权 | ✅ | **必须先打开首页再用搜索框提交**，直接访问搜索页会空白 |
-| 2Game | 授权 | ✅ | `div.form-product-card-2game-container` + `span.price-main`，中文站直接给人民币价 |
-| Gamesplanet | 授权 | ✅ | `div.game_list` + `span.price_current`（走 us 站，美元价） |
-| Loaded（原 CDKeys） | 授权 | ✅ | Magento 站，`div.product-info` + `span.price` |
-| 匹歪 SteamPY | C2C 灰市 | ⚠️ 需登录 | 搜索接口要登录，网页版点「登录匹歪」或命令行 `--login steampy` |
-| Kinguin | C2C 灰市 | ✅ | `span.min` 价格 + 向上找 `a[href*="/category/"]` 拿标题链接（类名是哈希，不能依赖） |
-| 小黑盒 | — | ❌ | 网页端已关搜索（只剩下载落地页），旧接口对任意关键词都返回空 |
+| 站点 | 渠道 | 状态 | 简介 | 取数方式 |
+| --- | --- | --- | --- | --- |
+| Humble Bundle | 授权 | ✅ | 美国老牌慈善捆绑包商店，月包/慈善包出名，常有独家优惠价 | 公开 JSON 接口 `/store/api/search`，无需浏览器，最快最稳 |
+| Fanatical | 授权 | ✅ | 英国授权零售商，常年高折扣，Bundle 打包价低，适合捡漏 | 浏览器渲染，卡片 `.hitCardStripe`；`/book/` `/comic/` 是漫画书，已过滤 |
+| 绿人 GMG | 授权 | ✅ | Green Man Gaming，英国授权零售商，折扣券体系多，国区可下单 | 浏览器渲染，读卡片 `ng-init` 里 UTF-16LE base64 的商品 JSON |
+| 杉果 | 授权 | ✅ | 国内老牌正版数字发行平台，人民币结算、中文客服，国区游戏最省心 | 用公开接口 `api.sonkwo.cn/product/sku/page?searchWord=`（**`searchWord` 是唯一生效的搜索参数**），返回 JSON 带 `id`，详情页 `sonkwo.hk/sku/{id}`（注意是 **.hk** 域名，`.cn/sku/` 会 404） |
+| 凤凰 | 授权 | ✅ | 凤凰游戏商城（fhyx.com），国内正版零售，常见国产单机与国区激活码 | **必须先打开首页再用搜索框提交**，直接访问搜索页会空白 |
+| 2Game | 授权 | ✅ | 授权零售站，有中文站且直接显示人民币价，付款方便 | `div.form-product-card-2game-container` + `span.price-main`，中文站直接给人民币价 |
+| Gamesplanet | 授权 | ✅ | 德国授权零售商，上架快、区域选区多，欧区价格参考 | `div.game_list` + `span.price_current`（走 us 站，美元价） |
+| Loaded（原 CDKeys） | 授权 | ✅ | 原 CDKeys 改名而来，老牌授权站，全球区 key 库存全 | Magento 站，`div.product-info` + `span.price` |
+| 匹歪 SteamPY | C2C 灰市 | ⚠️ 需登录 | SteamPY，国内 Steam 交易市场（C2C），玩家自由挂单，价格常最低但需登录 | 搜索接口要登录，命令行 `--login steampy` 保存登录态（网页版无登录入口，会显示「无匹配结果」） |
+| Kinguin | C2C 灰市 | ✅ | Kinguin 灰色市场（C2C），个人卖家挂单，低价但存在黑卡 key 被回收风险 | `span.min` 价格 + 向上找 `a[href*="/category/"]` 拿标题链接（类名是哈希，不能依赖） |
 
 ### 没能加进来的站
 
@@ -116,6 +116,7 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | GG.deals | 同上，Cloudflare 人机验证 |
 | G2A | 403（且本身就是 C2C 灰市，风险高于 Kinguin） |
 | GameBillet | 403 |
+| 小黑盒 | 网页端已关搜索（只剩下载落地页），旧接口对任意关键词都返回空 |
 
 ## 要注意的点
 

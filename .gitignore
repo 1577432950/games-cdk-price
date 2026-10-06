@@ -20,6 +20,18 @@ report.html
 state/
 *_state.json
 
+# 一次性调试脚本（探测/截图/转储，非项目代码）
+probe*.py
+dump_*.py
+sniff.py
+discover.py
+dom_*.py
+test_*.py
+verify_price.py
+fhyx_check.py
+gmg_test.py
+shot*.py
+
 # 编辑器 / 系统
 .vscode/
 .idea/

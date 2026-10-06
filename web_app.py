@@ -3,7 +3,7 @@
 游戏 CDK 比价 · 本地网页版
 
 运行后自动打开浏览器，在页面里输入中文名/英文名即可比价，
-结果以表格展示（站点 / 版本 / 商品名 / 原价 / 现价 / 折合人民币 / 网址），网址可直接点击。
+结果以表格展示（站点 / 渠道 / 版本 / 商品名 / 原价 / 现价 / 折合人民币 / 网址），网址可直接点击。
 
     python web_app.py            # 启动并自动开浏览器
     python web_app.py --port 8765
@@ -27,7 +27,6 @@ from sites import SITES, UNAVAILABLE
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
-_LOGIN_SESSION = {"ref": None}
 
 
 # ------------------------------------------------------------------ 任务
@@ -117,7 +116,6 @@ a{color:#1668dc;text-decoration:none;word-break:break-all} a:hover{text-decorati
     <div><label>游戏名（中文或英文）</label><input id="cn" type="text" placeholder="如 霍格沃茨之遗"></div>
     <div><label>英文名（选填，境外站用）</label><input id="en" type="text" placeholder="如 Hogwarts Legacy"></div>
     <div><button id="go">开始比价</button></div>
-    <div><button id="login" class="ghost">登录匹歪</button></div>
     <div><button id="quit" class="ghost">退出程序</button></div>
   </div>
   <div class="chk">
@@ -149,17 +147,6 @@ $('#en').addEventListener('keydown',e=>{if(e.key==='Enter')start()});
 $('#go').addEventListener('click',start);
 $('#quit').addEventListener('click',()=>{fetch('/api/quit',{method:'POST'});
   document.body.innerHTML='<main><div class="card">已退出，可关闭本页。</div></main>'});
-$('#login').addEventListener('click',async()=>{
-  const r=await fetch('/api/login/start',{method:'POST'}).then(r=>r.json());
-  $('#st').style.display='block'; $('#st').className='status';
-  $('#st').textContent=r.msg||'已打开浏览器';
-  const btn=$('#login'); btn.textContent='完成登录'; btn.disabled=false;
-  btn.onclick=async()=>{
-    const r2=await fetch('/api/login/finish',{method:'POST'}).then(r=>r.json());
-    $('#st').textContent=r2.msg||'已保存'; btn.textContent='登录匹歪'; btn.disabled=false;
-    btn.onclick=null; $('#login').addEventListener('click',()=>location.reload());
-  };
-});
 
 function start(){
   const cn=$('#cn').value.trim(); if(!cn){alert('请先填游戏名');return}
@@ -265,32 +252,6 @@ class Handler(BaseHTTPRequestHandler):
             jid = new_job(d.get("cn", ""), d.get("en", ""), d.get("sites") or [],
                           bool(d.get("all")))
             self._send(200, json.dumps({"id": jid}))
-
-        elif path == "/api/login/start":
-            try:
-                s = core.BrowserSession(headless=False)
-                s.new_page().goto("https://steampy.com/", wait_until="domcontentloaded",
-                                  timeout=60000)
-                _LOGIN_SESSION["ref"] = s
-                self._send(200, json.dumps(
-                    {"msg": "已打开浏览器窗口，登录 SteamPY 后回到本页点『完成登录』"},
-                    ensure_ascii=False))
-            except Exception as e:
-                self._send(200, json.dumps(
-                    {"msg": f"打开浏览器失败：{type(e).__name__}: {e}"}, ensure_ascii=False))
-
-        elif path == "/api/login/finish":
-            s = _LOGIN_SESSION.get("ref")
-            try:
-                if s:
-                    s.save_state("steampy")
-                    s.close()
-                _LOGIN_SESSION["ref"] = None
-                self._send(200, json.dumps({"msg": "匹歪登录态已保存，可以正常查询了"},
-                                           ensure_ascii=False))
-            except Exception as e:
-                self._send(200, json.dumps({"msg": f"保存失败：{type(e).__name__}: {e}"},
-                                           ensure_ascii=False))
 
         elif path == "/api/quit":
             self._send(200, '{"ok":true}')

@@ -62,7 +62,7 @@ class App:
         ttk.Button(top, text="导出HTML", command=self.export_html).grid(row=0, column=6, padx=3)
 
         self.all_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(top, text="显示全部（含DLC/周边）",
+        ttk.Checkbutton(top, text="显示全部（含 DLC、道具、周边）",
                         variable=self.all_var).grid(row=0, column=7, padx=10)
 
         ttk.Label(top, text="检查要查的站点:").grid(row=1, column=0, sticky="w", pady=(10, 0))

@@ -108,7 +108,7 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | 2Game | 授权 | ✅ | 授权零售站，有中文站且直接显示人民币价，付款方便 | `div.form-product-card-2game-container` + `span.price-main`，中文站直接给人民币价 |
 | Gamesplanet | 授权 | ✅ | 德国授权零售商，上架快、区域选区多，欧区价格参考 | `div.game_list` + `span.price_current`（走 us 站，美元价） |
 | Loaded（原 CDKeys） | 授权 | ✅ | 原 CDKeys 改名而来，老牌授权站，全球区 key 库存全 | Magento 站，`div.product-info` + `span.price` |
-| 匹歪 SteamPY | C2C 灰市 | ⚠️ 需登录 | SteamPY，国内 Steam 交易市场（C2C），玩家自由挂单，价格常最低但需登录 | 搜索接口要登录：网页版点「登录匹歪」开浏览器登录一次（登录成功自动保存并关窗），命令行用 `--login steampy` |
+| 匹歪 SteamPY | C2C 灰市 | ⚠️ 需登录 | SteamPY，国内 Steam 交易市场（C2C），玩家自由挂单，价格常最低但需登录 | 登录态在 `localStorage.accessToken`（不是 cookie），请求要带同名 header；网页版点「登录匹歪」登录一次（自动保存并关窗），命令行用 `--login steampy`。详见下文「关于匹歪（SteamPY）的登录」 |
 | Kinguin | C2C 灰市 | ✅ | Kinguin 灰色市场（C2C），个人卖家挂单，低价但存在黑卡 key 被回收风险 | `span.min` 价格 + 向上找 `a[href*="/category/"]` 拿标题链接（类名是哈希，不能依赖） |
 
 ### 没能加进来的站
@@ -132,6 +132,21 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
   此时会自动用其中最长的单词再搜一次，靠相关度过滤兜住噪声。
 - **价格口径**：`原价` 是站点标示的划线价，`现价` 是当前售价，最后一列统一折算人民币。
 - 站点改版会让选择器失效，用 `--debug` 导出原始数据排查，改 `sites.py` 里对应配置即可。
+
+## 关于匹歪（SteamPY）的登录
+
+匹歪的登录态**不是 cookie**，而是放在浏览器 `localStorage` 的 `accessToken` 键里，
+每次请求以**同名 header** 带上去（站点自己的 `app.js` 里就是
+`headers: {accessToken: localStorage.getItem("accessToken")}`）。这一点踩过坑：
+
+- **只保存/还原 cookie 是不够的**。原来的实现只 `add_cookies()`，等于登录态根本没存下来，
+  表现就是「明明登录过了，匹歪还是搜不到游戏」。
+  现在改用 Playwright 的 `storage_state`（同时带 cookie 和 localStorage）。
+- **判断登录态也必须自己带上 `accessToken` header**。不带这个 header 时，服务端一律回
+  `{"success":false,"message":"您还未登录"}`；带一个无效值才会回「登录已失效」。
+  所以只带 cookie 去问接口，永远是「未登录」—— 这正是之前「登录成功了界面还停在等待登录」的原因。
+- 顺带一提：站点在收到 401 后会**自己把 `accessToken` 清成空串**，所以调试时想观察这个值，
+  要在页面脚本执行之前读（用 `add_init_script` 在 document 开始时抓一份）。
 
 ## 关于登录窗口频闪
 

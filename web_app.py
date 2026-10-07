@@ -85,17 +85,14 @@ def _login_snapshot():
         return dict(LOGIN)
 
 
-def _steampy_logged_in(s):
-    """直接问匹歪的用户接口判断登录态。
+def _steampy_logged_in(s, pg):
+    """问匹歪的用户接口判断登录态（实现见 core.steampy_logged_in）。
 
-    未登录时它返回 {"success":false,"message":"您还未登录","code":401}，
-    登录后 success 为 true —— 这正是抓取时最关心的那个状态，所以拿它当准绳。
+    关键是要带上 accessToken 这个 header —— 匹歪的令牌存在 localStorage 里、
+    靠 header 传递，只带 cookie 去问永远是「您还未登录」，这正是之前明明
+    登录成功了界面还停在「等待登录」的原因。
     """
-    try:
-        r = s.ctx.request.get("https://steampy.com/xboot/user/info", timeout=10000)
-        return json.loads(r.text() or "{}").get("success") is True
-    except Exception:
-        return False
+    return core.steampy_logged_in(s, pg)
 
 
 def _login_worker():
@@ -147,10 +144,10 @@ def _login_worker():
             if page_gone():
                 # 关窗后再确认一次：用户可能刚登录完就顺手把窗口关了，
                 # 这时候不该报「没检测到登录成功」
-                if _steampy_logged_in(s):
+                if _steampy_logged_in(s, pg):
                     logged = True
                 break
-            if _steampy_logged_in(s):
+            if _steampy_logged_in(s, pg):
                 logged = True
                 break
             time.sleep(2)
@@ -522,7 +519,12 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except OSError:
+            # 页面在轮询过程中被关掉（关标签页 / 关程序）时连接会断，
+            # 这是正常现象，不用把它当异常抛出去刷屏
+            pass
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -568,6 +570,17 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, '{"error":"not found"}')
 
 
+class Server(ThreadingHTTPServer):
+    """比默认的多做一件事：把「客户端断开」这类噪音从控制台里滤掉。"""
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        # ConnectionAbortedError / ConnectionResetError / BrokenPipeError 都是 ConnectionError
+        if isinstance(exc, ConnectionError):
+            return
+        super().handle_error(request, client_address)
+
+
 def free_port():
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
@@ -584,7 +597,7 @@ def main():
 
     port = a.port or free_port()
     reap_orphan_browsers()          # 先收掉上次遗留的登录窗口，避免桌面上堆窗口
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    srv = Server(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
     print(f"服务已启动: {url}", flush=True)
     print("浏览器若未自动打开，请手动访问上面的地址。", flush=True)

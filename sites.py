@@ -88,6 +88,19 @@ JS_EXTRACT = """
     }
     return '';
   };
+  // 有些站（Fanatical）的卡片里根本没有标题元素，标题只写在封面图的 alt 上：
+  //   alt="Product cover for Hogwarts Legacy Digital Deluxe Edition"
+  // 所以给一个 alt 兜底，并允许配一个要剥掉的前缀。
+  const pickAlt = (el, sels, prefix) => {
+    for (const s of sels || []) {
+      const e = el.querySelector(s);
+      if (!e) continue;
+      let t = (e.getAttribute('alt') || '').trim();
+      if (prefix && t.indexOf(prefix) === 0) t = t.slice(prefix.length).trim();
+      if (t) return t;
+    }
+    return '';
+  };
   const cards = [...document.querySelectorAll(cfg.card)];
   return cards.slice(0, cfg.limit).map(c => {
     let href = '';
@@ -96,7 +109,7 @@ JS_EXTRACT = """
     const priceEl = cfg.price ? c.querySelector(cfg.price) : null;
     const listEl  = cfg.list  ? c.querySelector(cfg.list)  : null;
     return {
-      title: pick(c, cfg.title),
+      title: pick(c, cfg.title) || pickAlt(c, cfg.alt, cfg.altPrefix),
       raw:   (c.innerText || '').replace(/\\s*\\n+\\s*/g, ' | ').trim().slice(0, 300),
       price: priceEl ? priceEl.innerText.trim() : '',
       list:  listEl  ? listEl.innerText.trim()  : '',
@@ -122,6 +135,7 @@ def browser_scrape(page_factory, url, cfg, wait=7000, pre=None):
             pass
         return page.evaluate(JS_EXTRACT, {
             "card": cfg["card"], "title": cfg["title"],
+            "alt": cfg.get("alt", []), "altPrefix": cfg.get("alt_prefix", ""),
             "price": cfg.get("price", ""), "list": cfg.get("list", ""),
             "limit": cfg.get("limit", 30),
         })
@@ -163,10 +177,16 @@ def _to_offers(rows, base):
 # ---------------------------------------------------------------- Fanatical
 
 FANATICAL_CFG = {
-    "card": "div.hitCardStripe",
-    "title": [".hitCardStripe__seoName", "[class*='seoName']", "h3", "h2", "a[title]"],
+    # 卡片根是 div.HitCard：封面图在 HitCard__main 里，价格在里面的 hitCardStripe 里。
+    # 以前只取 div.hitCardStripe，就够不到封面图，标题也就无从取起。
+    "card": "div.HitCard",
+    # 游戏卡片**没有标题元素**（只有捆绑包才有 .hitCardStripe__seoName 这个 h2），
+    # 标题只写在封面图的 alt 上，所以走 alt 兜底。
+    "title": [".hitCardStripe__seoName"],
+    "alt": ["img[alt^='Product cover for']"],
+    "alt_prefix": "Product cover for",
     "price": ".card-price",
-    "list": "[class*='was-price'], .card-was-price, s, del",
+    "list": ".was-price, [class*='was-price']",
 }
 
 

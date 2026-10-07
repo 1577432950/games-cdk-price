@@ -102,7 +102,7 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | 站点 | 渠道 | 状态 | 简介 | 取数方式 |
 | --- | --- | --- | --- | --- |
 | Humble Bundle | 授权 | ✅ | 美国老牌慈善捆绑包商店，月包/慈善包出名，常有独家优惠价 | 公开 JSON 接口 `/store/api/search`，无需浏览器，最快最稳 |
-| Fanatical | 授权 | ✅ | 英国授权零售商，常年高折扣，Bundle 打包价低，适合捡漏 | 浏览器渲染，卡片 `.hitCardStripe`；`/book/` `/comic/` 是漫画书，已过滤 |
+| Fanatical | 授权 | ✅ | 英国授权零售商，常年高折扣，Bundle 打包价低，适合捡漏 | 浏览器渲染，卡片 `div.HitCard`；**游戏卡片里没有标题元素，标题只在封面图的 `alt` 里**（`alt="Product cover for <名字>"`，只有捆绑包才有 `.hitCardStripe__seoName`），所以走 alt 兜底；`/book/` `/comic/` 是漫画书，已过滤 |
 | 绿人 GMG | 授权 | ✅ | Green Man Gaming，英国授权零售商，折扣券体系多，国区可下单 | 浏览器渲染，读卡片 `ng-init` 里 UTF-16LE base64 的商品 JSON |
 | 杉果 | 授权 | ✅ | 国内老牌正版数字发行平台，人民币结算、中文客服，国区游戏最省心 | 用公开接口 `api.sonkwo.cn/product/sku/page?searchWord=`（**`searchWord` 是唯一生效的搜索参数**），返回 JSON 带 `id`，详情页 `sonkwo.hk/sku/{id}`（注意是 **.hk** 域名，`.cn/sku/` 会 404） |
 | 凤凰 | 授权 | ✅ | 凤凰游戏商城（fhyx.com），国内正版零售，常见国产单机与国区激活码 | **必须先打开首页再用搜索框提交**，直接访问搜索页会空白 |
@@ -247,7 +247,8 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | `cdk_price.py` | 命令行入口 |
 | `report.py` | HTML / JSON / CSV 导出 |
 | `gui.py` | tkinter 桌面窗口版（**当前 Python 没带 tkinter，跑不起来**；换带 tkinter 的 Python 可用） |
-| `probe*.py` `dump_*.py` `sniff.py` `dom_*.py` `discover.py` `fhyx_check.py` `gmg_test.py` `verify_price.py` `test_new4.py` | 开发期勘察各站接口和 DOM 的脚本，站点改版后可用来重新侦察 |
+| `diag_*.py` `probe*.py` `dump_*.py` `sniff.py` `dom_*.py` `discover.py` `fhyx_check.py` `gmg_test.py` | 开发期勘察各站接口和 DOM 的脚本，站点改版后可用来重新侦察（**全部在 `.gitignore` 里，不入库**） |
+| `test_*.py` `verify_*.py` `smoke_*.py` `shot*.py` | 开发期自测脚本：登录状态机、token 存取、打包后 exe 的端到端流程、界面截图。同样不入库 |
 
 登录态保存在 `%APPDATA%\CDKPrice\`（打包后 `core.ROOT` 会指向临时目录，所以特意改到了用户目录）。
 

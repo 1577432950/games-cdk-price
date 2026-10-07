@@ -84,19 +84,34 @@ def _login_snapshot():
         return dict(LOGIN)
 
 
-def _login_worker():
-    """打开有头浏览器让用户登录匹歪。
+def _steampy_logged_in(s):
+    """直接问匹歪的用户接口判断登录态。
 
-    登录过程中每 2 秒存一次登录态，用户登录完直接关掉浏览器窗口即可 ——
-    不需要再回页面点「完成登录」（关窗后浏览器上下文已销毁，那种做法会保存失败）。
+    未登录时它返回 {"success":false,"message":"您还未登录","code":401}，
+    登录后 success 为 true —— 这正是抓取时最关心的那个状态，所以拿它当准绳。
+    """
+    try:
+        r = s.ctx.request.get("https://steampy.com/xboot/user/info", timeout=10000)
+        return json.loads(r.text() or "{}").get("success") is True
+    except Exception:
+        return False
+
+
+def _login_worker():
+    """打开有头浏览器让用户登录匹歪，登录成功即自动保存并关闭窗口。
+
+    登录过程中每 2 秒存一次登录态，并轮询匹歪的用户接口判断是否已登录；
+    检测到登录成功就立刻收工，不要求用户手动关闭窗口。
     """
     s = None
+    err = None
+    logged = False
     try:
-        s = core.BrowserSession(headless=False, site_key="steampy")
+        s = core.BrowserSession(headless=False, site_key="steampy", stealth=False)
         pg = s.new_page()
         pg.goto("https://steampy.com/", wait_until="domcontentloaded", timeout=60000)
         _login_set(state="waiting",
-                   msg="浏览器窗口已打开，请完成登录；登录成功后直接关闭该窗口即可")
+                   msg="浏览器窗口已打开，请在窗口里完成登录；登录成功后会自动保存并关闭它")
 
         deadline = time.time() + 900          # 最多等 15 分钟，避免线程常驻
         while time.time() < deadline:
@@ -106,16 +121,30 @@ def _login_worker():
                 s.save_state("steampy")
             except Exception:
                 break
+            if _steampy_logged_in(s):
+                logged = True
+                try:
+                    s.save_state("steampy")   # 登录后再存一次，确保拿到新 cookie
+                except Exception:
+                    pass
+                break
             time.sleep(2)
-        _login_set(state="done", msg="匹歪登录态已保存，现在可以正常比价了")
     except Exception as e:
-        _login_set(state="error", msg=f"登录失败：{type(e).__name__}: {e}")
+        err = f"{type(e).__name__}: {e}"
     finally:
         if s:
             try:
                 s.close()
             except Exception:
                 pass
+
+    if err:
+        _login_set(state="error", msg=f"登录失败：{err}")
+    elif logged:
+        _login_set(state="done", msg="匹歪登录成功，登录态已保存，现在可以正常比价了")
+    else:
+        _login_set(state="cancelled",
+                   msg="登录窗口已关闭，但没有检测到登录成功；可再点一次「登录匹歪」重试")
 
 
 def start_login():
@@ -184,6 +213,10 @@ a{color:#1668dc;text-decoration:none;word-break:break-all} a:hover{text-decorati
 .bar i{display:block;height:100%;width:35%;background:#1668dc;animation:mv 1.1s infinite}
 @keyframes mv{0%{margin-left:-35%}100%{margin-left:100%}}
 .tip{color:var(--muted);font-size:12px;margin-top:10px}
+.ltip{display:none;margin-top:10px;padding:9px 12px;border-radius:6px;background:#eef3fb;
+ color:#31537e;font-size:12.5px;line-height:1.7}
+.ltip.err{background:#fdecea;color:#a8201a}
+.ltip.ok{background:#eaf6ec;color:#237804}
 footer{border-top:1px solid var(--bd);background:#fbfcfd;padding:14px 24px 26px;color:#7a828c;font-size:12px;line-height:1.85}
 footer .fw{max-width:1180px;margin:0 auto}
 footer b{color:#5a626c;font-weight:600}
@@ -204,6 +237,7 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
     <div><button id="login" class="ghost">登录匹歪</button></div>
     <div><button id="quit" class="ghost">退出程序</button></div>
   </div>
+  <div id="lmsg" class="ltip"></div>
   <div class="chk">
     <div class="chkhead"><span>比价站点</span>
       <label class="allbox"><input id="all" type="checkbox"> 显示全部（含DLC/周边）</label>
@@ -244,29 +278,32 @@ $('#go').addEventListener('click',start);
 $('#quit').addEventListener('click',()=>{fetch('/api/quit',{method:'POST'});
   document.body.innerHTML='<main><div class="card">已退出，可关闭本页。</div></main>'});
 
-// 登录匹歪：开浏览器 → 轮询状态 → 关窗即完成
+// 登录匹歪：写到独立的 #lmsg，避免和搜索进度条抢同一个 #st（两套轮询互相覆盖会闪屏）
 $('#login').addEventListener('click',async()=>{
-  const btn=$('#login');
+  const btn=$('#login'), box=$('#lmsg');
   btn.disabled=true; btn.textContent='等待登录…';
-  $('#st').style.display='block'; $('#st').className='status';
-  $('#st').innerHTML='正在打开浏览器窗口…';
+  box.className='ltip'; box.style.display='block'; box.textContent='正在打开浏览器窗口…';
   try{
     const r=await fetch('/api/login/start',{method:'POST'}).then(r=>r.json());
-    $('#st').innerHTML=r.msg||'浏览器窗口已打开';
-    if(!r.ok){btn.disabled=false; btn.textContent='登录匹歪'; return}
+    if(!r.ok){
+      btn.disabled=false; btn.textContent='登录匹歪';
+      box.className='ltip err'; box.textContent=r.msg||'已有登录窗口在进行中';
+      return;
+    }
+    box.textContent=r.msg||'浏览器窗口已打开';
     const t=setInterval(async()=>{
       let s;
       try{ s=await fetch('/api/login/status').then(r=>r.json()); }catch(e){ return }
-      if(s.msg) $('#st').innerHTML=s.msg;
-      if(s.state==='done'||s.state==='error'){
+      if(s.msg) box.textContent=s.msg;
+      if(s.state==='done'||s.state==='error'||s.state==='cancelled'){
         clearInterval(t);
         btn.disabled=false; btn.textContent='登录匹歪';
-        $('#st').className = (s.state==='error') ? 'status err' : 'status';
+        box.className = (s.state==='done') ? 'ltip ok' : 'ltip err';
       }
     },1500);
   }catch(e){
     btn.disabled=false; btn.textContent='登录匹歪';
-    $('#st').className='status err'; $('#st').textContent='登录请求失败：'+e;
+    box.className='ltip err'; box.textContent='登录请求失败：'+e;
   }
 });
 

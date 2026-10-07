@@ -31,21 +31,27 @@ DEFAULT_FX = {"USD": 7.10, "GBP": 9.10, "EUR": 7.80, "CNY": 1.0}
 # ---------------------------------------------------------------- 浏览器会话
 
 class BrowserSession:
-    """优先用系统自带的 Edge / Chrome，都没有才回落到 Playwright 自带的 Chromium。"""
+    """优先用系统自带的 Edge / Chrome，都没有才回落到 Playwright 自带的 Chromium。
 
-    def __init__(self, headless=True, site_key=None):
+    stealth=True（默认，抓取用）：隐藏 webdriver 标记 + 关闭沙箱，降低被判定为爬虫的概率。
+    stealth=False（手动登录用）：用完全正常的浏览器参数。登录的是真人，不需要伪装，
+    伪装标志反而可能让目标站的人机验证（如腾讯滑块）反复触发。
+    """
+
+    def __init__(self, headless=True, site_key=None, stealth=True):
         from playwright.sync_api import sync_playwright
         self._sp = sync_playwright().start()
-        self.browser = self._launch(headless)
+        self.browser = self._launch(headless, stealth)
         self.ctx = self.browser.new_context(
             user_agent=sites.UA, locale="zh-CN", viewport={"width": 1440, "height": 900})
-        self.ctx.add_init_script(
-            "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
+        if stealth:
+            self.ctx.add_init_script(
+                "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         if site_key:
             self._load_state(site_key)
 
-    def _launch(self, headless):
-        args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+    def _launch(self, headless, stealth=True):
+        args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"] if stealth else []
         for channel in ("msedge", "chrome"):
             try:
                 return self._sp.chromium.launch(channel=channel, headless=headless, args=args)

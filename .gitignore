@@ -32,6 +32,7 @@ verify_price.py
 fhyx_check.py
 gmg_test.py
 shot*.py
+diag_*.py
 
 # 个人素材（头像等，与项目代码无关）
 mk_avatar*.py

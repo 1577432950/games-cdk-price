@@ -76,15 +76,13 @@ class BrowserSession:
         self.ctx.storage_state(path=str(STATE_DIR / f"{site_key}.json"))
 
     def close(self):
-        try:
-            self.ctx.close()
-            self.browser.close()
-        except Exception:
-            pass
-        try:
-            self._sp.stop()
-        except Exception:
-            pass
+        # 三步各自独立 try：任何一步失败都不能拖累后面的关闭动作，
+        # 否则会留下关不掉的浏览器窗口（曾经就是 ctx.close() 抛异常导致 browser 没关）
+        for fn in (self.ctx.close, self.browser.close, self._sp.stop):
+            try:
+                fn()
+            except Exception:
+                pass
 
 
 def login(site_key, on_ready=None):

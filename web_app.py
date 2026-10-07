@@ -16,6 +16,7 @@
 
 import argparse
 import json
+import os
 import socket
 import sys
 import threading
@@ -100,8 +101,10 @@ def _steampy_logged_in(s):
 def _login_worker():
     """打开有头浏览器让用户登录匹歪，登录成功即自动保存并关闭窗口。
 
-    登录过程中每 2 秒存一次登录态，并轮询匹歪的用户接口判断是否已登录；
-    检测到登录成功就立刻收工，不要求用户手动关闭窗口。
+    等待期间只轮询一个只读接口判断登录态，不做任何会动浏览器的操作
+    （比如反复 save_state()），检测到成功才存一次。原因见 README 的
+    「关于登录窗口频闪」一节：窗口频闪是遗留进程造成的，但等待期间
+    频繁操作浏览器本身也没有必要，少动它更稳。
     """
     s = None
     err = None
@@ -110,25 +113,53 @@ def _login_worker():
         s = core.BrowserSession(headless=False, site_key="steampy", stealth=False)
         pg = s.new_page()
         pg.goto("https://steampy.com/", wait_until="domcontentloaded", timeout=60000)
+        pg.bring_to_front()
+        # 确保窗口里只剩匹歪这一个标签，避免多标签干扰用户
+        for ctx in s.browser.contexts:
+            for p in list(ctx.pages):
+                if p is not pg:
+                    try:
+                        p.close()
+                    except Exception:
+                        pass
         _login_set(state="waiting",
                    msg="浏览器窗口已打开，请在窗口里完成登录；登录成功后会自动保存并关闭它")
 
+        def page_gone():
+            """用户把窗口关掉了吗？
+
+            注意：点 X 关掉窗口后，Edge 的进程其实还活着（没有窗口而已），
+            browser.is_connected() 依然是 True，只有 page 会被判定为已关闭。
+            所以这里必须看 pg.is_closed()，否则状态会永远卡在「等待登录」。
+            """
+            try:
+                if pg.is_closed():
+                    return True
+            except Exception:
+                return True
+            try:
+                return not s.browser.is_connected()
+            except Exception:
+                return True
+
         deadline = time.time() + 900          # 最多等 15 分钟，避免线程常驻
         while time.time() < deadline:
-            if not s.browser.is_connected():
-                break
-            try:
-                s.save_state("steampy")
-            except Exception:
+            if page_gone():
+                # 关窗后再确认一次：用户可能刚登录完就顺手把窗口关了，
+                # 这时候不该报「没检测到登录成功」
+                if _steampy_logged_in(s):
+                    logged = True
                 break
             if _steampy_logged_in(s):
                 logged = True
-                try:
-                    s.save_state("steampy")   # 登录后再存一次，确保拿到新 cookie
-                except Exception:
-                    pass
                 break
             time.sleep(2)
+
+        if logged:
+            try:
+                s.save_state("steampy")       # 只在登录成功时存一次
+            except Exception:
+                pass
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
     finally:
@@ -155,6 +186,56 @@ def start_login():
         LOGIN.update(state="starting", msg="正在打开浏览器窗口…")
     threading.Thread(target=_login_worker, daemon=True).start()
     return True
+
+
+# ------------------------------------------------------- 遗留浏览器清理
+
+def reap_orphan_browsers():
+    """清理上次被强杀时遗留的 Playwright 浏览器（只在打包后的 exe 里生效）。
+
+    背景：登录窗口是 Playwright 拉起来的独立进程。如果 exe 被任务管理器强杀、
+    或者直接关掉控制台黑窗，这个浏览器不会跟着退出，会变成一个「关不掉的窗口」
+    一直留在桌面上（旧版本还会因为它每 2 秒动一次标签而看起来在频闪）。
+
+    判定条件很严格：进程命令行里必须带 playwright_chromiumdev_profile —— 这是
+    Playwright 自己建的临时配置目录，用户日常用的 Edge / Chrome 永远没有这个参数，
+    所以不会误杀用户自己的浏览器。另外若发现还有另一份本程序在跑，就整体跳过，
+    免得把那个实例正在用的登录窗口给关掉。
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    try:
+        import psutil
+    except Exception:
+        return
+    me = os.getpid()
+    my_name = os.path.basename(sys.executable)
+    targets = []
+    try:
+        for p in psutil.process_iter(["pid", "name", "cmdline"]):
+            if p.pid == me:
+                continue
+            name = (p.info["name"] or "").lower()
+            if name == my_name.lower():
+                return                                  # 还有另一份自己在跑，不动
+            if name not in ("msedge.exe", "chrome.exe", "chromium.exe"):
+                continue
+            cl = " ".join(p.info["cmdline"] or [])
+            if "playwright_chromiumdev_profile" in cl:
+                targets.append(p)
+    except Exception:
+        return
+    for p in targets:
+        try:
+            for c in p.children(recursive=True):
+                try:
+                    c.kill()
+                except Exception:
+                    pass
+            p.kill()
+            print(f"已清理上次遗留的浏览器窗口（PID={p.pid}）", flush=True)
+        except Exception:
+            pass
 
 
 # ------------------------------------------------------------------ 页面
@@ -502,6 +583,7 @@ def main():
     a = ap.parse_args()
 
     port = a.port or free_port()
+    reap_orphan_browsers()          # 先收掉上次遗留的登录窗口，避免桌面上堆窗口
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{port}/"
     print(f"服务已启动: {url}", flush=True)
@@ -514,6 +596,8 @@ def main():
     except KeyboardInterrupt:
         pass
     srv.server_close()
+    # 退出时如果登录窗口还开着（daemon 线程会被直接掐掉，来不及自己关），这里补一刀
+    reap_orphan_browsers()
     return 0
 
 

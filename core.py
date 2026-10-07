@@ -87,6 +87,36 @@ class BrowserSession:
                 pass
 
 
+def _safe(fn, default):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def steampy_wait_login(s, pg, initial="", page_gone=None, timeout=900, poll=2):
+    """等用户在窗口里完成匹歪登录，成功返回 True。
+
+    `initial` 是窗口刚打开时页面里已有的令牌（可能是 storage_state 还原来的旧登录态）。
+    判定成功要求令牌**变成另一个**，不能只看「当前有有效令牌」：否则本机已经登录过时，
+    用户点「重新登录」想换号，窗口一开就被判成功然后自动关掉，根本没法换。
+
+    page_gone 是可选回调，返回 True 表示用户把窗口关了。
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if page_gone and _safe(page_gone, True):
+            # 关窗后再确认一次：用户可能刚登录完就顺手把窗口关了。
+            # 但页面关掉之后就读不到令牌了，所以再退一步看磁盘上已有的登录态 ——
+            # 本来就有旧登录态、只是不想换号了的用户，不该被报成「没检测到登录」。
+            return steampy_logged_in(s, pg) or steampy_check() == "ok"
+        tok = steampy_token(pg)
+        if tok and tok != initial and steampy_logged_in(s, pg):
+            return True
+        time.sleep(poll)
+    return False
+
+
 def login(site_key, on_ready=None):
     """打开有头浏览器让用户登录一次，保存登录态。on_ready 在浏览器打开后回调。
 
@@ -103,13 +133,11 @@ def login(site_key, on_ready=None):
         on_ready()
     if site_key == "steampy":
         print("请在弹出的窗口里登录匹歪，登录成功后会自动保存并关闭窗口…", flush=True)
-        deadline = time.time() + 900
-        while time.time() < deadline:
-            if pg.is_closed():
-                break
-            if steampy_logged_in(s, pg):
-                break
-            time.sleep(2)
+        initial = steampy_token(pg)          # 还原出来的旧登录态，不能当成「刚登录」
+        if steampy_wait_login(s, pg, initial, lambda: pg.is_closed()):
+            print("已检测到登录成功。", flush=True)
+        else:
+            print("窗口已关闭，未检测到新的登录。", flush=True)
     s.save_state(site_key)
     s.close()
     return str(STATE_DIR / f"{site_key}.json")

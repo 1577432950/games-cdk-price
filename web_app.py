@@ -85,16 +85,6 @@ def _login_snapshot():
         return dict(LOGIN)
 
 
-def _steampy_logged_in(s, pg):
-    """问匹歪的用户接口判断登录态（实现见 core.steampy_logged_in）。
-
-    关键是要带上 accessToken 这个 header —— 匹歪的令牌存在 localStorage 里、
-    靠 header 传递，只带 cookie 去问永远是「您还未登录」，这正是之前明明
-    登录成功了界面还停在「等待登录」的原因。
-    """
-    return core.steampy_logged_in(s, pg)
-
-
 def _login_worker():
     """打开有头浏览器让用户登录匹歪，登录成功即自动保存并关闭窗口。
 
@@ -139,18 +129,12 @@ def _login_worker():
             except Exception:
                 return True
 
-        deadline = time.time() + 900          # 最多等 15 分钟，避免线程常驻
-        while time.time() < deadline:
-            if page_gone():
-                # 关窗后再确认一次：用户可能刚登录完就顺手把窗口关了，
-                # 这时候不该报「没检测到登录成功」
-                if _steampy_logged_in(s, pg):
-                    logged = True
-                break
-            if _steampy_logged_in(s, pg):
-                logged = True
-                break
-            time.sleep(2)
+        # 窗口打开时页面里可能已经有旧登录态（storage_state 还原来的）。
+        # 不能把它当成「刚登录成功」—— 按钮这时候写的是「✓ 已登录匹歪」，
+        # 用户点它就是要换号，窗口一开就自动关掉的话根本没法换。
+        initial = core.steampy_token(pg)
+        logged = core.steampy_wait_login(s, pg, initial, page_gone,
+                                         timeout=900)   # 最多等 15 分钟，避免线程常驻
 
         if logged:
             try:
@@ -169,7 +153,7 @@ def _login_worker():
     if err:
         _login_set(state="error", msg=f"登录失败：{err}")
     elif logged:
-        _login_set(state="done", msg="匹歪登录成功，登录态已保存，现在可以正常比价了")
+        _login_set(state="done", msg="匹歪已登录，登录态已保存，现在可以正常比价了")
     else:
         _login_set(state="cancelled",
                    msg="登录窗口已关闭，但没有检测到登录成功；可再点一次「登录匹歪」重试")

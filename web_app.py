@@ -39,7 +39,7 @@ LOGIN_LOCK = threading.Lock()
 
 # ------------------------------------------------------------------ 任务
 
-def _run_job(job_id, kw_cn, kw_en_in, sites, keep_all):
+def _run_job(job_id, kw_cn, kw_en_in, sites, kinds):
     def put(**kw):
         with JOBS_LOCK:
             JOBS[job_id].update(kw)
@@ -57,18 +57,18 @@ def _run_job(job_id, kw_cn, kw_en_in, sites, keep_all):
 
         put(status=f"正在抓取 {len(sites)} 个站点（英文名：{kw_en}），大约需要 30~60 秒…")
         results, errors = core.collect(kw_cn, kw_en, sites or None)
-        rows = core.build_rows(results, errors, kw_cn, kw_en, fx, keep_all=keep_all)
+        rows = core.build_rows(results, errors, kw_cn, kw_en, fx, kinds=kinds)
         put(state="done", status="完成", rows=rows)
     except Exception as e:
         put(state="error", status=f"{type(e).__name__}: {e}")
 
 
-def new_job(kw_cn, kw_en, sites, keep_all):
+def new_job(kw_cn, kw_en, sites, kinds):
     job_id = str(int(time.time() * 1000))
     with JOBS_LOCK:
         JOBS[job_id] = {"id": job_id, "state": "running", "status": "排队中…",
                         "rows": [], "fx": core.DEFAULT_FX}
-    threading.Thread(target=_run_job, args=(job_id, kw_cn, kw_en, sites, keep_all),
+    threading.Thread(target=_run_job, args=(job_id, kw_cn, kw_en, sites, kinds),
                      daemon=True).start()
     return job_id
 
@@ -248,7 +248,8 @@ button.ghost.okbtn:hover{background:#ddf0e1}
 .chk{margin-top:14px}
 .chkhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
 .chkhead>span{font-size:12px;color:var(--muted)}
-.chkhead .allbox{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:#333;margin:0}
+.chkhead .kindbox{display:inline-flex;align-items:center;gap:14px;font-size:13px;color:#333}
+.chkhead .kindbox label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
 .sites{display:grid;grid-template-columns:repeat(auto-fill,minmax(275px,1fr));gap:9px}
 .srow{border:1px solid var(--bd);border-radius:7px;padding:9px 11px;background:#fcfdfe;
  transition:border-color .15s,box-shadow .15s}
@@ -305,7 +306,10 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
   <div id="lmsg" class="ltip"></div>
   <div class="chk">
     <div class="chkhead"><span>比价站点</span>
-      <label class="allbox"><input id="all" type="checkbox"> 显示全部（含 DLC、道具、周边）</label>
+      <span class="kindbox">显示版本：
+        <label><input id="kbase" type="checkbox" checked> 本体</label>
+        <label><input id="kdlc" type="checkbox" checked> DLC/附加</label>
+      </span>
     </div>
     <div class="sites">__SITES__</div>
   </div>
@@ -431,14 +435,23 @@ $('#login').addEventListener('click',async()=>{
   }
 });
 
+function pickKinds(){
+  const k=[];
+  if($('#kbase').checked) k.push('本体');
+  if($('#kdlc').checked) k.push('DLC/附加');
+  return k;
+}
+
 function start(){
   const cn=$('#cn').value.trim(); if(!cn){alert('请先填游戏名');return}
+  const kinds=pickKinds();
+  if(!kinds.length){alert('请至少勾选「本体」或「DLC/附加」其中一个');return}
   const sites=[...document.querySelectorAll('.site:checked')].map(e=>e.value);
   $('#go').disabled=true; $('#tb').innerHTML=''; $('#wrap').style.display='none';
   $('#st').style.display='block'; $('#st').className='status';
   $('#st').innerHTML='正在提交…<div class="bar"><i></i></div>';
   fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cn,en:$('#en').value.trim(),sites,all:$('#all').checked})
+    body:JSON.stringify({cn,en:$('#en').value.trim(),sites,kinds})
   }).then(r=>r.json()).then(d=>{job=d.id; poll()});
 }
 
@@ -602,8 +615,10 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/search":
             d = json.loads(raw or "{}")
-            jid = new_job(d.get("cn", ""), d.get("en", ""), d.get("sites") or [],
-                          bool(d.get("all")))
+            kinds = d.get("kinds")
+            if kinds is None:                      # 老客户端没传就按默认分类
+                kinds = list(core.DEFAULT_KINDS)
+            jid = new_job(d.get("cn", ""), d.get("en", ""), d.get("sites") or [], kinds)
             self._send(200, json.dumps({"id": jid}))
 
         elif path == "/api/login/start":

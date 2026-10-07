@@ -61,9 +61,15 @@ class App:
         ttk.Button(top, text="登录匹歪", command=self.login_steampy).grid(row=0, column=5, padx=3)
         ttk.Button(top, text="导出HTML", command=self.export_html).grid(row=0, column=6, padx=3)
 
-        self.all_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(top, text="显示全部（含 DLC、道具、周边）",
-                        variable=self.all_var).grid(row=0, column=7, padx=10)
+        self.kbase_var = tk.BooleanVar(value=True)
+        self.kdlc_var = tk.BooleanVar(value=True)
+        kbox = ttk.Frame(top)
+        kbox.grid(row=0, column=7, padx=10)
+        ttk.Label(kbox, text="显示版本:").grid(row=0, column=0)
+        ttk.Checkbutton(kbox, text="本体",
+                        variable=self.kbase_var).grid(row=0, column=1, padx=(4, 0))
+        ttk.Checkbutton(kbox, text="DLC/附加",
+                        variable=self.kdlc_var).grid(row=0, column=2, padx=(4, 0))
 
         ttk.Label(top, text="检查要查的站点:").grid(row=1, column=0, sticky="w", pady=(10, 0))
         self.site_vars = {}
@@ -115,6 +121,14 @@ class App:
         if self.busy:
             return
         only = {k for k, v in self.site_vars.items() if v.get()} or None
+        kinds = []
+        if self.kbase_var.get():
+            kinds.append("本体")
+        if self.kdlc_var.get():
+            kinds.append("DLC/附加")
+        if not kinds:
+            messagebox.showwarning("提示", "请至少勾选「本体」或「DLC/附加」其中一个")
+            return
         self.busy = True
         self.btn.configure(state="disabled", text="比价中…")
         self.status.configure(text="正在获取汇率…")
@@ -123,10 +137,9 @@ class App:
             self.tree.delete(i)
 
         en = self.e_en.get().strip()
-        keep_all = self.all_var.get()
-        threading.Thread(target=self._work, args=(kw, en, only, keep_all), daemon=True).start()
+        threading.Thread(target=self._work, args=(kw, en, only, kinds), daemon=True).start()
 
-    def _work(self, kw, en, only, keep_all):
+    def _work(self, kw, en, only, kinds):
         try:
             self.q.put(("status", "正在获取汇率…"))
             fx = core.fetch_fx()
@@ -138,7 +151,7 @@ class App:
                 kw_en = info["en"] if info else kw
             self.q.put(("status", f"正在抓取各站（英文名：{kw_en}），大约需要半分钟…"))
             results, errors = core.collect(kw, kw_en, only)
-            rows = core.build_rows(results, errors, kw, kw_en, fx, keep_all=keep_all)
+            rows = core.build_rows(results, errors, kw, kw_en, fx, kinds=kinds)
             self.q.put(("done", rows, kw, kw_en))
         except Exception as e:
             self.q.put(("error", f"{type(e).__name__}: {e}"))

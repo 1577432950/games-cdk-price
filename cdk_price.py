@@ -89,7 +89,11 @@ def main():
     ap.add_argument("--csv", help="结果写入 CSV 文件")
     ap.add_argument("--html", help="生成可点击链接的 HTML 比价报告")
     ap.add_argument("--top", type=int, default=0, help="只显示最便宜的 N 条")
-    ap.add_argument("--all", action="store_true", help="保留 DLC/道具/原声/周边等全部结果")
+    ap.add_argument("--kinds", default="本体,DLC/附加",
+                    help="要保留的版本分类，逗号分隔。默认 本体,DLC/附加；"
+                         "也可写 道具 / 周边 / 账号（如 --kinds 本体 只看本体）")
+    ap.add_argument("--all", action="store_true",
+                    help="不过滤任何分类，含道具/周边/账号（等价于 --kinds 全选）")
     ap.add_argument("--fx", type=float, help="手动指定 1 USD 兑多少 CNY")
     ap.add_argument("--login", metavar="SITE", help="打开浏览器登录指定站点并保存登录态")
     ap.add_argument("--debug", action="store_true", help="把原始抓取结果存到 debug_last.json")
@@ -136,7 +140,13 @@ def main():
             json.dumps({"results": results, "errors": errors}, ensure_ascii=False, indent=2),
             "utf-8")
 
-    rows = core.build_rows(results, errors, kw_cn, kw_en, fx, keep_all=a.all)
+    if a.all:
+        kinds = None                                  # None = 不过滤
+    else:
+        kinds = [s.strip() for s in a.kinds.split(",") if s.strip()]
+        if not kinds:
+            ap.error("--kinds 不能为空")
+    rows = core.build_rows(results, errors, kw_cn, kw_en, fx, kinds=kinds)
     rows = resort(rows, a.sort, a.desc)
     if a.top:
         rows = rows[: a.top]

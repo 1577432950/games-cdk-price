@@ -356,8 +356,9 @@ ITEM_RE = re.compile(
     r"|cosmetics?|\bskins?\b|\bemotes?\b|皮肤|外观|饰品|时装|道具|点券|钻石|宝石",
     re.I)
 
-# 默认视图里不展示的分类：都不是「游戏本体」，价格没有可比性
-NONBASE_KINDS = ("周边", "账号", "道具")
+# 默认展示的分类。界面上「本体」「DLC/附加」两个勾选框就是这两个值，
+# 其余分类（道具/周边/账号）不提供勾选，永远不展示。
+DEFAULT_KINDS = ("本体", "DLC/附加")
 
 
 def classify(title, url=""):
@@ -437,7 +438,13 @@ def collect(kw_cn, kw_en, only=None, workers=3, log=None):
 # ---------------------------------------------------------------- 结果整理
 
 
-def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
+def build_rows(results, errors, kw_cn, kw_en, fx, kinds=DEFAULT_KINDS, keep_all=False):
+    """kinds：允许保留的分类；传 None 表示不过滤任何分类。
+
+    keep_all=True 是 kinds=None 的简写，留给命令行 `--all` 用。
+    """
+    if keep_all:
+        kinds = None
     rows = []
     for key, offers in results.items():
         name = SITES[key]["name"]
@@ -448,7 +455,7 @@ def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
                          "price": None, "cny": None, "url": "", "kind": "错误",
                          "list": None, "note": "", "risk": risk})
         got = 0
-        hidden = 0
+        hidden = {}
         for o in offers or []:
             if o.get("note") and o.get("price") is None:
                 rows.append({"site": name, "title": "[不可用]", "price": None,
@@ -463,8 +470,8 @@ def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
             if not keep_all and not o.get("trusted") and relevance(title, q) < 0.6:
                 continue
             kind = classify(title, o.get("url", ""))
-            if not keep_all and kind in NONBASE_KINDS:
-                hidden += 1
+            if kinds is not None and kind not in kinds:
+                hidden[kind] = hidden.get(kind, 0) + 1
                 continue
             got += 1
             cny = o["price"] * fx.get(o["currency"], 1.0)
@@ -481,9 +488,9 @@ def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
             if SITES[key].get("need_login"):
                 hint = "需要登录：点「登录匹歪」按钮登录一次后再查"
             elif hidden:
-                # 有货、但全是道具/DLC/周边这类非本体商品，别让用户误以为「没货」
-                hint = (f"该站只找到 {hidden} 条道具/DLC/周边等非本体商品（默认隐藏），"
-                        "勾选「显示全部」可查看")
+                # 有货、但都被分类筛选挡掉了，别让用户误以为「没货」
+                detail = "、".join(f"{k} {n} 条" for k, n in sorted(hidden.items()))
+                hint = f"该站只找到 {detail}，已被当前分类筛选隐藏"
             rows.append({"site": name, "title": "[无匹配结果]", "price": None,
                          "cny": None, "url": "", "kind": "提示", "list": None,
                          "note": hint, "risk": risk})

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -42,13 +43,23 @@ class BrowserSession:
         from playwright.sync_api import sync_playwright
         self._sp = sync_playwright().start()
         self.browser = self._launch(headless, stealth)
-        self.ctx = self.browser.new_context(
-            user_agent=sites.UA, locale="zh-CN", viewport={"width": 1440, "height": 900})
+        ctx_kw = {"user_agent": sites.UA, "locale": "zh-CN",
+                  "viewport": {"width": 1440, "height": 900}}
+        # 登录态整体交给 storage_state 还原：它同时带 cookie 和 localStorage。
+        # 之前只 add_cookies() 是错的 —— 匹歪的 token 存在 localStorage 里，
+        # 只还原 cookie 等于没登录（表现就是「登录了也搜不到游戏」）。
+        if site_key:
+            f = STATE_DIR / f"{site_key}.json"
+            if f.exists():
+                try:
+                    json.loads(f.read_text("utf-8"))      # 坏文件先挡掉，别让 new_context 抛错
+                    ctx_kw["storage_state"] = str(f)
+                except Exception:
+                    pass
+        self.ctx = self.browser.new_context(**ctx_kw)
         if stealth:
             self.ctx.add_init_script(
                 "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
-        if site_key:
-            self._load_state(site_key)
 
     def _launch(self, headless, stealth=True):
         args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"] if stealth else []
@@ -58,15 +69,6 @@ class BrowserSession:
             except Exception:
                 continue
         return self._sp.chromium.launch(headless=headless, args=args)
-
-    def _load_state(self, site_key):
-        f = STATE_DIR / f"{site_key}.json"
-        if not f.exists():
-            return
-        try:
-            self.ctx.add_cookies(json.loads(f.read_text("utf-8")).get("cookies", []))
-        except Exception:
-            pass
 
     def new_page(self):
         return self.ctx.new_page()
@@ -86,7 +88,11 @@ class BrowserSession:
 
 
 def login(site_key, on_ready=None):
-    """打开有头浏览器让用户登录一次，保存登录态。on_ready 在浏览器打开后回调。"""
+    """打开有头浏览器让用户登录一次，保存登录态。on_ready 在浏览器打开后回调。
+
+    匹歪的令牌存在 localStorage 里，所以要等它真的登录成功再保存；
+    其它站点沿用「打开 → 回调 → 保存」的老流程。
+    """
     url = {"steampy": "https://steampy.com/", "sonkwo": "https://www.sonkwo.cn/",
            "fhyx": "https://www.fhyx.com/", "gmg": "https://www.greenmangaming.com/zh/",
            "fanatical": "https://www.fanatical.com/zh-hans/"}.get(site_key, "https://steampy.com/")
@@ -95,9 +101,51 @@ def login(site_key, on_ready=None):
     pg.goto(url, wait_until="domcontentloaded", timeout=60000)
     if on_ready:
         on_ready()
+    if site_key == "steampy":
+        print("请在弹出的窗口里登录匹歪，登录成功后会自动保存并关闭窗口…", flush=True)
+        deadline = time.time() + 900
+        while time.time() < deadline:
+            if pg.is_closed():
+                break
+            if steampy_logged_in(s, pg):
+                break
+            time.sleep(2)
     s.save_state(site_key)
     s.close()
     return str(STATE_DIR / f"{site_key}.json")
+
+
+# ---------------------------------------------------------------- 匹歪登录态
+
+def steampy_token(pg):
+    """取匹歪的登录令牌。
+
+    匹歪的登录态**不是 cookie**：站点自己的 app.js 里，令牌放在 localStorage 的
+    accessToken 键里，每次请求以同名 header 带上去
+    （`headers:{accessToken: localStorage.getItem("accessToken")}`）。
+    所以只还原 cookie 等于没登录 —— 这正是「登录了也搜不到游戏」的原因。
+    """
+    try:
+        return pg.evaluate("() => localStorage.getItem('accessToken')") or ""
+    except Exception:
+        return ""
+
+
+def steampy_logged_in(s, pg):
+    """带 accessToken 去问匹歪的用户接口，success 为 true 才算登录成功。
+
+    不带这个 header 时服务端一律回「您还未登录」，带一个无效值才回
+    「登录已失效」—— 所以判断登录态必须自己把这个 header 补上。
+    """
+    token = steampy_token(pg)
+    if not token:
+        return False
+    try:
+        r = s.ctx.request.get("https://steampy.com/xboot/user/info",
+                              headers={"accessToken": token}, timeout=10000)
+        return json.loads(r.text() or "{}").get("success") is True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------- 汇率 / 英文名

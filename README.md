@@ -134,6 +134,32 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 - **价格口径**：`原价` 是站点标示的划线价，`现价` 是当前售价，最后一列统一折算人民币。
 - 站点改版会让选择器失效，用 `--debug` 导出原始数据排查，改 `sites.py` 里对应配置即可。
 
+## 看到「没有匹配商品」时怎么自己核对
+
+这个提示有**两种完全不同的原因**，光看结果分不出来，所以最好自己去站点上搜一下：
+
+| 站点 | 手动搜索地址 | 参数名 |
+| --- | --- | --- |
+| Fanatical | `https://www.fanatical.com/zh-hans/search?search=<英文名>` | `search` |
+| 绿人GMG | `https://www.greenmangaming.com/zh/search/?query=<英文名>` | `query` |
+| Humble | `https://www.humblebundle.com/store/search?search=<英文名>` | `search` |
+| 杉果 | `https://www.sonkwo.cn/search?keyword=<中文名>` | `keyword` |
+
+两种情况：
+
+- **站点真没有**（正常）：站点页面上会明确写「显示 0 产品」，或者商品页标题变成
+  「Title No Longer Available」。GMG 的中国区商品下架就是这种。
+- **我们抓错了**（bug）：站点页面明明有结果，工具却是 0 条。Fanatical 曾经就是这样 ——
+  它的游戏卡片**没有标题元素**，标题只写在封面图的 `alt` 里，选择器落空后标题退化成
+  价格文本，再被相关度过滤整批筛掉，最后显示成「没有匹配商品」。
+
+另外还有一个更容易中招的坑：
+
+- **只填中文名时，所有英文站都会变成「没有匹配商品」。** 原因是 Steam 的
+  `api/storesearch` 只认英文关键词，中文一律返回 0 条，于是英文名解析不出来、
+  退化成拿中文去搜英文站。现在中文关键词会改走 `search/suggest` + `api/appdetails`
+  换英文名，但**自己把英文名填上永远是最稳的**。
+
 ## 关于匹歪（SteamPY）的登录
 
 匹歪的登录态**不是 cookie**，而是放在浏览器 `localStorage` 的 `accessToken` 键里，

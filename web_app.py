@@ -5,6 +5,9 @@
 运行后自动打开浏览器，在页面里输入中文名/英文名即可比价，
 结果以表格展示（站点 / 渠道 / 版本 / 商品名 / 原价 / 现价 / 折合人民币 / 网址），网址可直接点击。
 
+匹歪（SteamPY）需要登录才能搜到商品，页面上的「登录匹歪」按钮会开一个有头浏览器
+让你登录一次，登录态存到本机，之后查询就能正常返回匹歪的价格。
+
     python web_app.py            # 启动并自动开浏览器
     python web_app.py --port 8765
 
@@ -27,6 +30,10 @@ from sites import SITES, UNAVAILABLE
 
 JOBS = {}
 JOBS_LOCK = threading.Lock()
+
+# 匹歪登录：状态在后台线程与 HTTP 线程之间共享，用锁保护
+LOGIN = {"state": "idle", "msg": ""}
+LOGIN_LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------------ 任务
@@ -63,6 +70,62 @@ def new_job(kw_cn, kw_en, sites, keep_all):
     threading.Thread(target=_run_job, args=(job_id, kw_cn, kw_en, sites, keep_all),
                      daemon=True).start()
     return job_id
+
+
+# ------------------------------------------------------------------ 匹歪登录
+
+def _login_set(**kw):
+    with LOGIN_LOCK:
+        LOGIN.update(kw)
+
+
+def _login_snapshot():
+    with LOGIN_LOCK:
+        return dict(LOGIN)
+
+
+def _login_worker():
+    """打开有头浏览器让用户登录匹歪。
+
+    登录过程中每 2 秒存一次登录态，用户登录完直接关掉浏览器窗口即可 ——
+    不需要再回页面点「完成登录」（关窗后浏览器上下文已销毁，那种做法会保存失败）。
+    """
+    s = None
+    try:
+        s = core.BrowserSession(headless=False, site_key="steampy")
+        pg = s.new_page()
+        pg.goto("https://steampy.com/", wait_until="domcontentloaded", timeout=60000)
+        _login_set(state="waiting",
+                   msg="浏览器窗口已打开，请完成登录；登录成功后直接关闭该窗口即可")
+
+        deadline = time.time() + 900          # 最多等 15 分钟，避免线程常驻
+        while time.time() < deadline:
+            if not s.browser.is_connected():
+                break
+            try:
+                s.save_state("steampy")
+            except Exception:
+                break
+            time.sleep(2)
+        _login_set(state="done", msg="匹歪登录态已保存，现在可以正常比价了")
+    except Exception as e:
+        _login_set(state="error", msg=f"登录失败：{type(e).__name__}: {e}")
+    finally:
+        if s:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+
+def start_login():
+    with LOGIN_LOCK:
+        # starting 是 worker 接手前的过渡态，也要挡住，否则连点会开出两个窗口
+        if LOGIN["state"] in ("starting", "waiting"):
+            return False
+        LOGIN.update(state="starting", msg="正在打开浏览器窗口…")
+    threading.Thread(target=_login_worker, daemon=True).start()
+    return True
 
 
 # ------------------------------------------------------------------ 页面
@@ -138,6 +201,7 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
     <div><label>游戏名（中文或英文）</label><input id="cn" type="text" placeholder="如 霍格沃茨之遗"></div>
     <div><label>英文名（选填，境外站用）</label><input id="en" type="text" placeholder="如 Hogwarts Legacy"></div>
     <div><button id="go">开始比价</button></div>
+    <div><button id="login" class="ghost">登录匹歪</button></div>
     <div><button id="quit" class="ghost">退出程序</button></div>
   </div>
   <div class="chk">
@@ -179,6 +243,32 @@ $('#en').addEventListener('keydown',e=>{if(e.key==='Enter')start()});
 $('#go').addEventListener('click',start);
 $('#quit').addEventListener('click',()=>{fetch('/api/quit',{method:'POST'});
   document.body.innerHTML='<main><div class="card">已退出，可关闭本页。</div></main>'});
+
+// 登录匹歪：开浏览器 → 轮询状态 → 关窗即完成
+$('#login').addEventListener('click',async()=>{
+  const btn=$('#login');
+  btn.disabled=true; btn.textContent='等待登录…';
+  $('#st').style.display='block'; $('#st').className='status';
+  $('#st').innerHTML='正在打开浏览器窗口…';
+  try{
+    const r=await fetch('/api/login/start',{method:'POST'}).then(r=>r.json());
+    $('#st').innerHTML=r.msg||'浏览器窗口已打开';
+    if(!r.ok){btn.disabled=false; btn.textContent='登录匹歪'; return}
+    const t=setInterval(async()=>{
+      let s;
+      try{ s=await fetch('/api/login/status').then(r=>r.json()); }catch(e){ return }
+      if(s.msg) $('#st').innerHTML=s.msg;
+      if(s.state==='done'||s.state==='error'){
+        clearInterval(t);
+        btn.disabled=false; btn.textContent='登录匹歪';
+        $('#st').className = (s.state==='error') ? 'status err' : 'status';
+      }
+    },1500);
+  }catch(e){
+    btn.disabled=false; btn.textContent='登录匹歪';
+    $('#st').className='status err'; $('#st').textContent='登录请求失败：'+e;
+  }
+});
 
 function start(){
   const cn=$('#cn').value.trim(); if(!cn){alert('请先填游戏名');return}
@@ -326,6 +416,8 @@ class Handler(BaseHTTPRequestHandler):
             with JOBS_LOCK:
                 job = JOBS.get(jid, {"state": "error", "status": "任务不存在"})
             self._send(200, json.dumps(job, ensure_ascii=False))
+        elif path == "/api/login/status":
+            self._send(200, json.dumps(_login_snapshot(), ensure_ascii=False))
         else:
             self._send(404, '{"error":"not found"}')
 
@@ -339,6 +431,16 @@ class Handler(BaseHTTPRequestHandler):
             jid = new_job(d.get("cn", ""), d.get("en", ""), d.get("sites") or [],
                           bool(d.get("all")))
             self._send(200, json.dumps({"id": jid}))
+
+        elif path == "/api/login/start":
+            if start_login():
+                self._send(200, json.dumps(
+                    {"ok": True, "msg": "正在打开浏览器窗口，请稍候…"},
+                    ensure_ascii=False))
+            else:
+                self._send(200, json.dumps(
+                    {"ok": False, "msg": "已经有一个登录窗口在进行中，请先完成它"},
+                    ensure_ascii=False))
 
         elif path == "/api/quit":
             self._send(200, '{"ok":true}')

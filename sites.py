@@ -40,8 +40,10 @@ def parse_price(text):
         return None, None
 
 
-def http_get(url, timeout=25, **kw):
-    return creq.get(url, headers=HEADERS, timeout=timeout, impersonate="chrome", **kw)
+def http_get(url, timeout=25, headers=None, **kw):
+    """统一的 HTTP GET。headers 给了就用给的（整份替换），否则用默认 HEADERS。"""
+    return creq.get(url, headers=headers or HEADERS, timeout=timeout,
+                    impersonate="chrome", **kw)
 
 
 # ---------------------------------------------------------------- Humble Bundle
@@ -315,52 +317,73 @@ def fhyx(kw, page_factory=None, **_):
 
 # ---------------------------------------------------------------- 匹歪 SteamPY
 
-STEAMPY_CFG = {
-    "card": "div.exLi",
-    "title": [".gameName", "[class*='game-name']", "[class*='name']", "h3", "h2"],
-    "price": ".price-wap .c_0, .price-wap div:first-child",
-    "list": ".price-wap .c_3",
-}
+STEAMPY_API = "https://steampy.com/xboot/steamGame/searchByName"
+STEAMPY_HOME = "https://steampy.com/"
 
 
-def steampy(kw, page_factory=None, **_):
-    def pre(page):
-        # 匹歪的搜索框在未登录时隐藏；已登录（有 storage_state）则可直接用
-        page.goto("https://steampy.com/", wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(4500)
-        box = page.locator("input[placeholder='搜索游戏']").first
+def _steampy_note(msg):
+    return [{"title": "", "price": None, "currency": "CNY", "list_price": None,
+             "url": STEAMPY_HOME, "note": msg}]
+
+
+def steampy(kw, **_):
+    """匹歪：直接调站点自己的搜索接口。
+
+    这里踩过一串坑，都记在 README「关于匹歪（SteamPY）的登录」里，简述：
+
+    1. 登录态**不是 cookie**，是 localStorage 里的 `accessToken`，请求要以**同名 header**
+       带上。不带就是 `{"success":false,"message":"您还未登录"}`。
+    2. 以前是用浏览器去模拟输入搜索框，但那个搜索框在页面上是 `display:none`，
+       回车根本没触发搜索，抓到的其实是**首页的「平台热销游戏」列表** ——
+       所以「有些游戏能搜到」纯粹是因为它恰好在那张热销榜上（比如生化危机8），
+       不在榜上的（比如消逝的光芒2）就一条都搜不到。现在改成直接调接口。
+    3. 列表价 = `gamePrice × discount`，原价 = `oriPrice`。这是站点搜索列表自己的渲染逻辑
+       （`parseFloat((Number(gamePrice) * Number(discount)).toFixed(2))`），
+       直接取 `gamePrice` 会偏高。
+    """
+    import core          # 延迟导入：core 在模块级 import 了 sites，这里不能放到顶层
+
+    token = core.steampy_token_from_state()
+    if not token:
+        return _steampy_note("匹歪需要登录：点「登录匹歪」按钮登录一次再查")
+
+    try:
+        r = http_get(STEAMPY_API, params={"gameName": kw},
+                     headers={**HEADERS, "accessToken": token})
+        data = r.json()
+    except Exception as e:
+        return _steampy_note(f"匹歪接口请求失败：{type(e).__name__}")
+
+    if data.get("code") == 401 or "未登录" in (data.get("message") or ""):
+        return _steampy_note("匹歪登录已失效：重新点「登录匹歪」登录一次再查")
+
+    res = data.get("result")
+    content = (res.get("content") if isinstance(res, dict) else res) or []
+    out = []
+    for it in content:
         try:
-            box.fill(kw, timeout=6000)
-        except Exception:
-            page.evaluate(
-                """(kw) => {
-                    const i = document.querySelector("input[placeholder='搜索游戏']");
-                    if (!i) return;
-                    let p = i;
-                    while (p && p !== document.body) {
-                        p.style.display = 'block';
-                        p.style.visibility = 'visible';
-                        p.style.opacity = '1';
-                        p = p.parentElement;
-                    }
-                    i.value = kw;
-                    i.dispatchEvent(new Event('input', {bubbles: true}));
-                }""", kw)
-            page.wait_for_timeout(1200)
-            page.keyboard.press("Enter")
-        else:
-            page.wait_for_timeout(800)
-            box.press("Enter")
-        page.wait_for_timeout(6500)
-
-    rows = browser_scrape(page_factory, "about:blank", STEAMPY_CFG, wait=0, pre=pre)
-    if not rows:
-        return [{
-            "title": "", "price": None, "currency": "CNY", "list_price": None,
-            "url": "https://steampy.com/",
-            "note": "匹歪搜索需登录：先点「登录匹歪」按钮登录一次",
-        }]
-    return _to_offers(rows, "https://steampy.com")
+            gp = float(it.get("gamePrice") or 0)
+            disc = float(it.get("discount") or 1)
+        except (TypeError, ValueError):
+            continue
+        if not gp:
+            continue
+        cn = (it.get("gameNameCn") or "").strip()
+        en = (it.get("gameName") or "").strip()
+        title = f"{cn} {en}".strip() if cn and cn not in en else (cn or en)
+        if not title:
+            continue
+        out.append({
+            "title": title,
+            "price": round(gp * (disc or 1), 2),
+            "currency": "CNY",
+            "list_price": it.get("oriPrice"),
+            "url": f'https://steampy.com/hotGameDetail?gameId={it.get("id")}',
+            "note": "",
+            # 这份结果就是匹歪自己的搜索接口给的，别在下游再按相关度筛一遍
+            "trusted": True,
+        })
+    return out
 
 
 # ---------------------------------------------------------------- Kinguin（C2C 灰市）
@@ -450,7 +473,7 @@ SITES = {
     "fhyx":      {"name": "凤凰",    "lang": "cn", "kind": "browser", "fn": fhyx, "risk": "授权",
                   "desc": "凤凰游戏商城（fhyx.com），国内正版零售，常见国产单机与国区激活码。",
                   "site": "https://www.fhyx.com/"},
-    "steampy":   {"name": "匹歪",    "lang": "cn", "kind": "browser", "fn": steampy,
+    "steampy":   {"name": "匹歪",    "lang": "cn", "kind": "http",    "fn": steampy,
                   "risk": "C2C", "need_login": True,
                   "desc": "SteamPY，国内 Steam 交易市场（C2C），玩家自由挂单，价格常最低但需登录。",
                   "site": "https://steampy.com/"},

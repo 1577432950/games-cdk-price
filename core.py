@@ -131,6 +131,53 @@ def steampy_token(pg):
         return ""
 
 
+def steampy_token_from_state():
+    """取匹歪 accessToken，没有就返回 ""（抓取适配器与登录态校验都用它）。
+
+    令牌就在 storage_state 文件的 origins[].localStorage 里，所以不用开浏览器。
+    注意本地 userInfo 里的 nickName / username 存的其实是邮箱和内部账号串，
+    不适合拿来展示，这里只取令牌。
+    """
+    f = STATE_DIR / "steampy.json"
+    if not f.exists():
+        return ""
+    try:
+        st = json.loads(f.read_text("utf-8"))
+        for origin in st.get("origins") or []:
+            for item in origin.get("localStorage") or []:
+                if item.get("name") == "accessToken":
+                    return item.get("value") or ""
+    except Exception:
+        pass
+    return ""
+
+
+def steampy_check():
+    """校验本地匹歪登录态是否还有效，返回 state 字符串：
+
+    "ok"      令牌有效，可以正常比价
+    "none"    本地根本没登录过
+    "expired" 有令牌但服务端说失效了（匹歪会在令牌失效时清掉它）
+    "unknown" 网络不通或响应看不懂 —— 这种情况不能谎报「未登录」，
+              否则用户明明登录过却看到按钮退回未登录态，会以为又坏了
+    """
+    token = steampy_token_from_state()
+    if not token:
+        return "none"
+    try:
+        r = sites.http_get("https://steampy.com/xboot/user/info",
+                           headers={**sites.HEADERS, "accessToken": token},
+                           timeout=10)
+        d = r.json()          # curl_cffi 的 .text 是属性不是方法，用 .json()
+    except Exception:
+        return "unknown"
+    if not isinstance(d, dict):
+        return "unknown"
+    if d.get("success") is True:
+        return "ok"
+    return "expired" if d else "unknown"
+
+
 def steampy_logged_in(s, pg):
     """带 accessToken 去问匹歪的用户接口，success 为 true 才算登录成功。
 
@@ -308,7 +355,11 @@ def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
                              "list": None, "note": o["note"], "risk": risk})
                 continue
             title = o.get("title", "")
-            if not keep_all and relevance(title, q) < 0.6:
+            # 适配器标了 trusted 的，说明这份结果就是站点自己的搜索接口吐出来的，
+            # 不用再拿相关度猜一遍 —— 中文站常返回纯英文标题（匹歪就是这样），
+            # 再筛一次会把「消逝的光芒2 → Dying Light 2: Digital Extras Edition」
+            # 这类完全正确的命中误杀。
+            if not keep_all and not o.get("trusted") and relevance(title, q) < 0.6:
                 continue
             kind = classify(title, o.get("url", ""))
             if not keep_all and kind in ("周边", "账号"):
@@ -335,6 +386,24 @@ def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
     return rows
 
 
+# 只认这些公认的跟踪参数，别的 query 参数一律保留 —— 有的站把商品 id 放在
+# query 里（匹歪就是 /hotGameDetail?gameId=xxx），整条砍掉会把不同商品并成一条。
+_DEDUPE_NOISE = re.compile(r"^(utm_|_ga|gclid|fbclid|ref$|referrer$|spm$)", re.I)
+
+
+def _url_key(url):
+    """把商品页 URL 归一化成去重用的键：小写、去尾斜杠、只去掉跟踪参数。"""
+    u = (url or "").strip()
+    if not u:
+        return ""
+    p = urllib.parse.urlsplit(u)
+    q = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True)
+         if not _DEDUPE_NOISE.match(k)]
+    q.sort()
+    return urllib.parse.urlunsplit((p.scheme.lower(), p.netloc.lower(),
+                                    p.path.rstrip("/"), urllib.parse.urlencode(q), ""))
+
+
 def _dedupe(rows):
     """同一站点同一商品页只留最便宜的一条（有的站会有大小写重复条目）。"""
     seen = {}
@@ -343,7 +412,7 @@ def _dedupe(rows):
         if r["cny"] is None or not r["url"]:
             out.append(r)
             continue
-        key = (r["site"], re.sub(r"[?#].*$", "", r["url"]).rstrip("/").lower())
+        key = (r["site"], _url_key(r["url"]))
         if key in seen:
             old = seen[key]
             if r["cny"] < (old["cny"] or 1e18):

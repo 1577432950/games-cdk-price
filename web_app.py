@@ -259,6 +259,8 @@ button{height:34px;padding:0 18px;border:0;border-radius:6px;background:#1668dc;
  font-size:14px;cursor:pointer;font-family:inherit}
 button:hover{background:#0f56b8} button:disabled{background:#b8c4d4;cursor:not-allowed}
 button.ghost{background:#fff;color:#444;border:1px solid var(--bd)}
+button.ghost.okbtn{background:#eaf6ec;color:#237804;border-color:#a8d8b0;font-weight:600}
+button.ghost.okbtn:hover{background:#ddf0e1}
 .chk{margin-top:14px}
 .chkhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
 .chkhead>span{font-size:12px;color:var(--muted)}
@@ -271,6 +273,7 @@ button.ghost{background:#fff;color:#444;border:1px solid var(--bd)}
 .slab b{font-weight:600}
 .sdesc{color:#8a9099;font-size:11.5px;line-height:1.6;margin-top:5px;padding-left:20px}
 .needlogin{font-size:11px;color:#b06b00;background:#fff7e6;border-radius:3px;padding:1px 5px;white-space:nowrap}
+.needlogin.ok{color:#237804;background:#eaf6ec}
 .status{padding:10px 14px;border-radius:6px;background:#eef3fb;color:#31537e;font-size:13px}
 .status.err{background:#fdecea;color:#a8201a}
 table{width:100%;border-collapse:collapse;background:#fff;font-size:13px}
@@ -356,16 +359,76 @@ $('#go').addEventListener('click',start);
 $('#quit').addEventListener('click',()=>{fetch('/api/quit',{method:'POST'});
   document.body.innerHTML='<main><div class="card">已退出，可关闭本页。</div></main>'});
 
+// ---- 匹歪登录态：按钮文字 / 站点卡片徽标 / 提示条三处一起反映真实状态 ----
+// 之前登录成功后按钮直接退回「登录匹歪」，用户看不出到底登录上没有，
+// 所以这里改成以后端校验为准（GET /api/login/check）。
+const LOGIN_TEXT='登录匹歪';
+
+function loginBadge(text, ok){
+  const cb=document.querySelector('input.site[value="steampy"]');
+  if(!cb) return;
+  const row=cb.closest('.srow');
+  const span=row && row.querySelector('.needlogin');
+  if(!span) return;
+  span.textContent=text;
+  span.className = ok ? 'needlogin ok' : 'needlogin';
+}
+
+function applyLoginState(state){
+  const btn=$('#login'), box=$('#lmsg');
+  if(state==='ok'){
+    btn.disabled=false;
+    btn.textContent='✓ 已登录匹歪';
+    btn.title='登录态已保存在本机，点此可重新登录换号';
+    btn.classList.add('okbtn');
+    loginBadge('已登录', true);
+    box.className='ltip ok'; box.style.display='block';
+    box.textContent='匹歪已登录，登录态存在本机，可以直接比价。';
+  }else if(state==='expired'){
+    btn.disabled=false;
+    btn.textContent='重新登录匹歪';
+    btn.title='';
+    btn.classList.remove('okbtn');
+    loginBadge('需登录', false);
+    box.className='ltip err'; box.style.display='block';
+    box.textContent='匹歪登录态已失效，请重新登录一次。';
+  }else if(state==='none'){
+    btn.disabled=false;
+    btn.textContent=LOGIN_TEXT;
+    btn.title='';
+    btn.classList.remove('okbtn');
+    loginBadge('需登录', false);
+  }else{
+    // unknown：网络不通，判断不了。别谎报「未登录」，也别把已有提示覆盖掉
+    btn.disabled=false;
+    btn.textContent=LOGIN_TEXT;
+    btn.title='';
+    btn.classList.remove('okbtn');
+  }
+}
+
+async function refreshLogin(){
+  const btn=$('#login');
+  btn.disabled=true; btn.textContent='检查登录态…';
+  try{
+    const d=await fetch('/api/login/check').then(r=>r.json());
+    applyLoginState(d.state);
+  }catch(e){
+    applyLoginState('unknown');
+  }
+}
+refreshLogin();          // 页面一打开就对齐真实登录态
+
 // 登录匹歪：写到独立的 #lmsg，避免和搜索进度条抢同一个 #st（两套轮询互相覆盖会闪屏）
 $('#login').addEventListener('click',async()=>{
   const btn=$('#login'), box=$('#lmsg');
-  btn.disabled=true; btn.textContent='等待登录…';
+  btn.disabled=true; btn.textContent='等待登录…'; btn.classList.remove('okbtn');
   box.className='ltip'; box.style.display='block'; box.textContent='正在打开浏览器窗口…';
   try{
     const r=await fetch('/api/login/start',{method:'POST'}).then(r=>r.json());
     if(!r.ok){
-      btn.disabled=false; btn.textContent='登录匹歪';
       box.className='ltip err'; box.textContent=r.msg||'已有登录窗口在进行中';
+      refreshLogin();
       return;
     }
     box.textContent=r.msg||'浏览器窗口已打开';
@@ -375,12 +438,11 @@ $('#login').addEventListener('click',async()=>{
       if(s.msg) box.textContent=s.msg;
       if(s.state==='done'||s.state==='error'||s.state==='cancelled'){
         clearInterval(t);
-        btn.disabled=false; btn.textContent='登录匹歪';
-        box.className = (s.state==='done') ? 'ltip ok' : 'ltip err';
+        refreshLogin();     // 结束时以后端校验为准，而不是硬写回「登录匹歪」
       }
     },1500);
   }catch(e){
-    btn.disabled=false; btn.textContent='登录匹歪';
+    btn.disabled=false; btn.textContent=LOGIN_TEXT;
     box.className='ltip err'; box.textContent='登录请求失败：'+e;
   }
 });
@@ -538,6 +600,14 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps(job, ensure_ascii=False))
         elif path == "/api/login/status":
             self._send(200, json.dumps(_login_snapshot(), ensure_ascii=False))
+        elif path == "/api/login/check":
+            # 页面每次加载都问一次「本机到底有没有有效的匹歪登录态」，
+            # 免得刷新后按钮又退回「登录匹歪」、看着像没登录
+            try:
+                state = core.steampy_check()
+            except Exception:
+                state = "unknown"
+            self._send(200, json.dumps({"state": state}, ensure_ascii=False))
         else:
             self._send(404, '{"error":"not found"}')
 

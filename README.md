@@ -161,6 +161,6 @@ pyinstaller --onefile --console --noconfirm --name "游戏CDK比价" \
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 <Your Name>
+[MIT](LICENSE) © 2026 liuqinghua
 
 本项目与各比价站点无任何关联，不代售任何商品，也不对交易结果负责。

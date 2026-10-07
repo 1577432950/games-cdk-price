@@ -336,11 +336,28 @@ def relevance(title, query):
 
 MERCH_RE = re.compile(r"周边|手办|玩偶|毛绒|公仔|立牌|海报|服饰|T恤|抱枕|设定集|画集|artbook|merch", re.I)
 # 成品号/共享账号不是真正的 CDK，必须滤掉（英文站常见 "Steam Account"）
+# 注意：\baccess\b 要排除 "Early Access"（抢先体验期的本体，不是账号）
 ACCOUNT_RE = re.compile(
     r"成品账号|账号|初始号|成品号|steam\s*accounts?|\baccounts?\b|离线激活|离线账号"
-    r"|\baccess\b|\boffline\s*activ", re.I)
+    r"|(?<!early )\baccess\b|\boffline\s*activ", re.I)
 EXTRA_RE = re.compile(r"soundtrack|ost|原声|音乐|dlc|季票|season pass|bundle|合集|同捆", re.I)
 NONGAME_URL_RE = re.compile(r"/(book|comic|ebook|merch)/", re.I)
+
+# 游戏内道具 / 货币 / 掉宝 —— 同样不是游戏本体，绝不能算成「本体」报价。
+# 下面每条都来自 Kinguin 列表页的真实样本：
+#   "Dying Light 2 Stay Human Items > Global > PC > Twitch Drop"   ← 用户报的那条
+#   "Adopt Me Items > Foods > Legendary > Ride-A-Pet Potion > ..."
+#   "Apex Legends - 1000 Apex Coins EA App CD Key"
+ITEM_RE = re.compile(
+    r"twitch\s*drop|in-?game\s*items?|游戏内(道具|物品)|掉宝"
+    r"|\bitems?\s*>|>\s*items?\b"                      # Kinguin 的面包屑分类节点
+    r"|\b\d+\s+(?:\w+\s+){0,2}(?:coins?|credits?|points|gems?|tokens?)\b"
+    r"|\b(?:apex\s*coins?|v-?bucks|riot\s*points|minecoins|steam\s*credits?)\b"
+    r"|cosmetics?|\bskins?\b|\bemotes?\b|皮肤|外观|饰品|时装|道具|点券|钻石|宝石",
+    re.I)
+
+# 默认视图里不展示的分类：都不是「游戏本体」，价格没有可比性
+NONBASE_KINDS = ("周边", "账号", "道具")
 
 
 def classify(title, url=""):
@@ -348,6 +365,8 @@ def classify(title, url=""):
         return "周边"
     if ACCOUNT_RE.search(title or ""):
         return "账号"
+    if ITEM_RE.search(title or ""):
+        return "道具"
     if EXTRA_RE.search(title or ""):
         return "DLC/附加"
     return "本体"
@@ -429,6 +448,7 @@ def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
                          "price": None, "cny": None, "url": "", "kind": "错误",
                          "list": None, "note": "", "risk": risk})
         got = 0
+        hidden = 0
         for o in offers or []:
             if o.get("note") and o.get("price") is None:
                 rows.append({"site": name, "title": "[不可用]", "price": None,
@@ -443,7 +463,8 @@ def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
             if not keep_all and not o.get("trusted") and relevance(title, q) < 0.6:
                 continue
             kind = classify(title, o.get("url", ""))
-            if not keep_all and kind in ("周边", "账号"):
+            if not keep_all and kind in NONBASE_KINDS:
+                hidden += 1
                 continue
             got += 1
             cny = o["price"] * fx.get(o["currency"], 1.0)
@@ -459,6 +480,10 @@ def build_rows(results, errors, kw_cn, kw_en, fx, keep_all=False):
             hint = "该站在当前地区/关键词下没有匹配商品"
             if SITES[key].get("need_login"):
                 hint = "需要登录：点「登录匹歪」按钮登录一次后再查"
+            elif hidden:
+                # 有货、但全是道具/DLC/周边这类非本体商品，别让用户误以为「没货」
+                hint = (f"该站只找到 {hidden} 条道具/DLC/周边等非本体商品（默认隐藏），"
+                        "勾选「显示全部」可查看")
             rows.append({"site": name, "title": "[无匹配结果]", "price": None,
                          "cny": None, "url": "", "kind": "提示", "list": None,
                          "note": hint, "risk": risk})

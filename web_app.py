@@ -305,7 +305,7 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
   <div id="lmsg" class="ltip"></div>
   <div class="chk">
     <div class="chkhead"><span>比价站点</span>
-      <label class="allbox"><input id="all" type="checkbox"> 显示全部（含DLC/周边）</label>
+      <label class="allbox"><input id="all" type="checkbox"> 显示全部（含 DLC、道具、周边）</label>
     </div>
     <div class="sites">__SITES__</div>
   </div>

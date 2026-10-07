@@ -89,7 +89,7 @@ def main():
     ap.add_argument("--csv", help="结果写入 CSV 文件")
     ap.add_argument("--html", help="生成可点击链接的 HTML 比价报告")
     ap.add_argument("--top", type=int, default=0, help="只显示最便宜的 N 条")
-    ap.add_argument("--all", action="store_true", help="保留 DLC/原声/周边等全部结果")
+    ap.add_argument("--all", action="store_true", help="保留 DLC/道具/原声/周边等全部结果")
     ap.add_argument("--fx", type=float, help="手动指定 1 USD 兑多少 CNY")
     ap.add_argument("--login", metavar="SITE", help="打开浏览器登录指定站点并保存登录态")
     ap.add_argument("--debug", action="store_true", help="把原始抓取结果存到 debug_last.json")

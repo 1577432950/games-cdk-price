@@ -28,6 +28,8 @@ sniff.py
 discover.py
 dom_*.py
 test_*.py
+# 例外：分类器的回归测试，是长期项目代码不是一次性脚本
+!test_classify.py
 verify_price.py
 fhyx_check.py
 gmg_test.py

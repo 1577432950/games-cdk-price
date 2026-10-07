@@ -10,6 +10,7 @@ env/
 build/
 dist/
 *.exe
+*.spec
 *.spec.tmp
 
 # 运行期产物：登录态 cookie 绝对不能入库

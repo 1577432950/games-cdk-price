@@ -237,22 +237,75 @@ def fetch_fx():
         return dict(DEFAULT_FX)
 
 
-def resolve_steam(kw, timeout=10):
-    """用 Steam 搜索拿英文名与 appid。失败返回 None（国内网络可能连不通 Steam）。"""
-    try:
-        from curl_cffi import requests as creq
-        out = {"appid": None, "en": None, "zh": None}
+def _http_retry(url, timeout=6, tries=3, **kw):
+    """带重试的 GET。这个网络环境访问 Steam 偶发 `CONNECT tunnel failed, 502`，
+    单次失败就放弃的话，英文名解析会时好时坏（表现为「同一个词有时能搜到有时不能」）。
+    失败时会等满整个 timeout 才抛，所以超时给短一点、多试几次更划算。
+    """
+    from curl_cffi import requests as creq
+    last = None
+    for i in range(tries):
+        try:
+            r = creq.get(url, timeout=timeout, impersonate="chrome", **kw)
+            if r.status_code == 200:
+                return r
+            last = RuntimeError(f"HTTP {r.status_code}")
+        except Exception as e:
+            last = e
+        if i < tries - 1:
+            time.sleep(0.6 * (i + 1))
+    raise last
+
+
+def resolve_steam(kw, timeout=6):
+    """用 Steam 搜索拿英文名与 appid。失败返回 None（国内网络可能连不通 Steam）。
+
+    坑：`api/storesearch` **只认英文关键词**，拿中文去搜一律返回 0 条
+    （实测「消逝的光芒2」「生化危机8」都是 total=0）。而英文站（Fanatical /
+    GMG / Humble …）必须用英文名搜，于是「只填中文名」时它们会**静默**变成
+    「该站没有匹配商品」—— 看着像站点没货，其实是关键词没解析出来。
+
+    所以中文关键词走第二条路：`search/suggest`（支持中文，国区译名也能匹配）
+    拿 appid，再用 `api/appdetails?l=en` 换成英文名。
+    """
+    def get(url):
+        return _http_retry(url, timeout=timeout)
+
+    out = {"appid": None, "en": None, "zh": None}
+    cjk = bool(re.search(r"[\u4e00-\u9fff]", kw or ""))
+
+    # 1) 关键词是英文时 storesearch 最准。中文关键词一律返回 0 条，直接跳过 ——
+    #    既省两次必然落空的请求，也避开它偶发的 502 抖动（每次要等满超时）。
+    if not cjk:
         for lang in ("en", "zh-cn"):
-            u = ("https://store.steampowered.com/api/storesearch/?term="
-                 + urllib.parse.quote(kw) + "&cc=cn&l=" + lang)
-            r = creq.get(u, timeout=timeout, impersonate="chrome")
-            items = r.json().get("items") or []
+            try:
+                u = ("https://store.steampowered.com/api/storesearch/?term="
+                     + urllib.parse.quote(kw) + "&cc=cn&l=" + lang)
+                items = get(u).json().get("items") or []
+            except Exception:
+                items = []
             if items:
                 out["appid"] = items[0].get("id")
                 out["en" if lang == "en" else "zh"] = items[0].get("name")
-        return out if out["en"] else None
+        if out["en"]:
+            return out
+
+    # 2) 中文关键词（或上一步没命中）：suggest 拿 appid → appdetails 换英文名
+    try:
+        u = ("https://store.steampowered.com/search/suggest?term="
+             + urllib.parse.quote(kw) + "&f=games&cc=cn&l=schinese&use_store_query=1")
+        ids = re.findall(r'data-ds-appid="(\d+)"', get(u).text or "")
     except Exception:
-        return None
+        ids = []
+    if ids:
+        out["appid"] = ids[0]
+        try:
+            u = ("https://store.steampowered.com/api/appdetails?appids="
+                 + ids[0] + "&l=en&filters=basic")
+            out["en"] = ((get(u).json().get(ids[0]) or {}).get("data") or {}).get("name")
+        except Exception:
+            pass
+    return out if out["en"] else None
 
 
 # ---------------------------------------------------------------- 相关度 / 分类

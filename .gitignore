@@ -34,6 +34,7 @@ gmg_test.py
 shot*.py
 shot*.png
 verify_*.py
+smoke_*.py
 diag_*.py
 
 # 个人素材（头像等，与项目代码无关）

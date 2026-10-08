@@ -4,7 +4,9 @@
 
 每个适配器返回 Offer 列表：
     Offer = {
-        title, price, currency, list_price, url, note
+        title, price, currency, list_price, url, note,
+        platform,   # 选填：站点接口直接给的发放平台，如 ["steam"]；没有就不写
+        trusted,    # 选填：结果来自站点自己的搜索接口，下游不必再按相关度筛
     }
 price 为 float 原始币种金额，currency 为 ISO 代码（CNY / USD / GBP / EUR）。
 """
@@ -70,6 +72,9 @@ def humble(kw, **_):
             "list_price": float(full) if full else None,
             "url": "https://www.humblebundle.com/store/" + (item.get("human_url") or item.get("machine_name", "")),
             "note": "",
+            # Humble 的接口直接给了发放方式（steam / epic / gog / nintendo…），
+            # 比从标题猜可靠，交给 core.detect_platforms 优先使用。
+            "platform": item.get("delivery_methods") or None,
         })
     return out
 
@@ -400,6 +405,8 @@ def steampy(kw, **_):
             "list_price": it.get("oriPrice"),
             "url": f'https://steampy.com/hotGameDetail?gameId={it.get("id")}',
             "note": "",
+            # 匹歪本身就是 Steam 交易市场，这里挂的全是 Steam 的东西，不用猜
+            "platform": "Steam",
             # 这份结果就是匹歪自己的搜索接口给的，别在下游再按相关度筛一遍
             "trusted": True,
         })

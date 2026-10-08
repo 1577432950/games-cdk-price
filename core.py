@@ -361,6 +361,104 @@ ITEM_RE = re.compile(
 DEFAULT_KINDS = ("本体", "DLC/附加")
 
 
+# ---------------------------------------------------------------- 平台识别
+
+# 平台词表全部取自各站真实列表页标题，别凭印象加词。样本：
+#   "ELDEN RING - Shadow of the Erdtree DLC EU PC Steam CD Key"     -> Steam
+#   "Cyberpunk 2077 - Phantom Liberty DLC GOG CD Key"               -> GOG
+#   "Alan Wake 2 Epic Games Green Gift Redemption Code"             -> Epic
+#   "Elden Ring Xbox One & Xbox Series X"                           -> Xbox
+#   "Elden Ring PS5 Account"                                        -> PlayStation
+#   "Zelda: Tears of the Kingdom US Nintendo Switch CD Key"         -> Switch
+#   "Battlefield 2042 PC EA App CD Key"                             -> 其他平台
+# 一条标题可能同时命中多个（"Starfield ... Xbox Series X|S / Windows 10 CD Key"），
+# 全部收下，展示时用 / 连接。
+#
+# 注意几个刻意收紧的地方，避免误伤游戏名：
+#   - Epic 只认 "Epic Games" / "EGS"，不认单独的 "Epic"（否则 "Epic Mickey" 会中招）
+#   - Switch 只认 "Nintendo Switch" 或独立单词 switch
+#   - Origin 用 (?!\s+of\b) 排除 "Origin of ..." 这类游戏名（"Origins" 因词边界天然不匹配）
+PLATFORM_PATTERNS = (
+    ("Steam",       re.compile(r"\bsteam\b", re.I)),
+    ("Epic",        re.compile(r"\bepic\s*games\b|\begs\b", re.I)),
+    ("GOG",         re.compile(r"\bgog\b|gog\.com", re.I)),
+    ("Xbox",        re.compile(r"\bxbox\b", re.I)),
+    ("PlayStation", re.compile(r"\bplaystation\b|\bps[45]\b|\bpsn\b", re.I)),
+    ("Switch",      re.compile(r"\bnintendo\s*switch\b|\bswitch\b", re.I)),
+    ("其他平台",     re.compile(
+        r"\bea\b|\borigin\b(?!\s+of\b)"
+        r"|\bubisoft\b|\buplay\b|\bubisoft\s*connect\b"
+        r"|\bbattle\.?net\b|\bblizzard\b|\brockstar\b"
+        r"|\bmicrosoft\s*store\b|\bwindows\s*(?:10|11)\b", re.I)),
+)
+
+# 界面上「显示平台」的勾选框就是这些值，顺序即展示顺序。
+# 「未标注」= 标题和站点接口里都没有平台线索（国内站、多数授权零售站都是这样）。
+PLATFORM_ORDER = ("Steam", "Epic", "GOG", "Xbox", "PlayStation", "Switch",
+                  "其他平台", "未标注")
+DEFAULT_PLATFORMS = PLATFORM_ORDER
+UNKNOWN_PLATFORM = "未标注"
+
+# 适配器直接给的结构化平台名（Humble 的 delivery_methods 等）-> 统一标签
+_RAW_PLATFORM = {
+    "steam": "Steam", "epic": "Epic", "epic games": "Epic", "egs": "Epic",
+    "gog": "GOG", "gog.com": "GOG",
+    "xbox": "Xbox", "xbox one": "Xbox", "xbox series": "Xbox",
+    "nintendo": "Switch", "nintendo switch": "Switch", "switch": "Switch",
+    "playstation": "PlayStation", "psn": "PlayStation",
+    "origin": "其他平台", "ea": "其他平台", "ea app": "其他平台",
+    "uplay": "其他平台", "ubisoft": "其他平台", "ubisoft connect": "其他平台",
+    "battlenet": "其他平台", "battle.net": "其他平台", "blizzard": "其他平台",
+    "rockstar": "其他平台", "microsoft": "其他平台",
+}
+
+
+def _canon_platform(v):
+    """把适配器给的结构化平台名归一成界面上的标签，认不出返回 None。"""
+    return _RAW_PLATFORM.get(str(v or "").strip().lower())
+
+
+def _url_platform_text(url):
+    """URL 里也藏着平台信息，而且比标题还准。
+
+    看 Loaded 的真实商品页就能发现，它的 slug 结尾直接写死了发放方式，
+    标题里反而只有含糊的 "PC"：
+
+        .../battlefield-2042-pc-steam          标题 "Battlefield 2042 PC (Steam)"
+        .../battlefield-2042-gold-edition-pc-origin   标题 "Battlefield 2042 Gold Edition PC"
+        .../cyberpunk-2077-ultimate-edition-pc-gog    标题 "... PC (GOG)"
+        .../starfield-pc-steam                  标题 "Starfield PC"
+
+    只取路径最后一段的末尾几个词，避免游戏名里恰好出现平台词就误判。
+    """
+    if not url:
+        return ""
+    seg = urllib.parse.urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]
+    return " ".join(seg.replace("-", " ").replace("_", " ").split()[-4:])
+
+
+def detect_platforms(title="", note="", raw=None, url=""):
+    """返回这条商品所属的平台列表；认不出来就是 ["未标注"]。
+
+    raw 是适配器直接给的结构化平台（比如 Humble 的 delivery_methods），比标题可靠，
+    排在最前。识别不出就老实说不知道 —— 宁可标「未标注」，也不猜。
+    """
+    found = []
+    for x in (raw if isinstance(raw, (list, tuple)) else [raw]):
+        c = _canon_platform(x)
+        if c and c not in found:
+            found.append(c)
+    text = f"{title or ''} {note or ''} {_url_platform_text(url)}"
+    for label, pat in PLATFORM_PATTERNS:
+        if label not in found and pat.search(text):
+            found.append(label)
+    if not found:
+        return [UNKNOWN_PLATFORM]
+    # 按 PLATFORM_ORDER 排序，保证同一条商品每次展示的标签顺序都一样
+    return sorted(found, key=lambda x: PLATFORM_ORDER.index(x)
+                  if x in PLATFORM_ORDER else 99)
+
+
 def classify(title, url=""):
     if MERCH_RE.search(title or "") or NONGAME_URL_RE.search(url or ""):
         return "周边"
@@ -438,9 +536,11 @@ def collect(kw_cn, kw_en, only=None, workers=3, log=None):
 # ---------------------------------------------------------------- 结果整理
 
 
-def build_rows(results, errors, kw_cn, kw_en, fx, kinds=DEFAULT_KINDS, keep_all=False):
-    """kinds：允许保留的分类；传 None 表示不过滤任何分类。
+def build_rows(results, errors, kw_cn, kw_en, fx, kinds=DEFAULT_KINDS,
+               platforms=DEFAULT_PLATFORMS, keep_all=False):
+    """kinds：允许保留的版本分类；platforms：允许保留的平台。
 
+    两者传 None 都表示「该项不过滤」。
     keep_all=True 是 kinds=None 的简写，留给命令行 `--all` 用。
     """
     if keep_all:
@@ -453,14 +553,15 @@ def build_rows(results, errors, kw_cn, kw_en, fx, kinds=DEFAULT_KINDS, keep_all=
         if errors.get(key):
             rows.append({"site": name, "title": f"[抓取失败] {errors[key][:70]}",
                          "price": None, "cny": None, "url": "", "kind": "错误",
-                         "list": None, "note": "", "risk": risk})
+                         "list": None, "plat": "", "note": "", "risk": risk})
         got = 0
         hidden = {}
+        hidden_plat = {}
         for o in offers or []:
             if o.get("note") and o.get("price") is None:
                 rows.append({"site": name, "title": "[不可用]", "price": None,
                              "cny": None, "url": o.get("url", ""), "kind": "提示",
-                             "list": None, "note": o["note"], "risk": risk})
+                             "list": None, "plat": "", "note": o["note"], "risk": risk})
                 continue
             title = o.get("title", "")
             # 适配器标了 trusted 的，说明这份结果就是站点自己的搜索接口吐出来的，
@@ -473,12 +574,19 @@ def build_rows(results, errors, kw_cn, kw_en, fx, kinds=DEFAULT_KINDS, keep_all=
             if kinds is not None and kind not in kinds:
                 hidden[kind] = hidden.get(kind, 0) + 1
                 continue
+            plats = detect_platforms(title, o.get("note", ""), o.get("platform"),
+                                     o.get("url", ""))
+            plat = "/".join(plats)
+            if platforms is not None and not (set(plats) & set(platforms)):
+                hidden_plat[plat] = hidden_plat.get(plat, 0) + 1
+                continue
             got += 1
             cny = o["price"] * fx.get(o["currency"], 1.0)
             lp = o.get("list_price")
             rows.append({
                 "site": name, "title": title, "price": o["price"], "cur": o["currency"],
                 "cny": round(cny, 2), "url": o.get("url", ""), "kind": kind,
+                "plat": plat,
                 "list": round(lp * fx.get(o["currency"], 1.0), 2) if lp else None,
                 "note": o.get("note", ""), "risk": risk,
             })
@@ -487,13 +595,21 @@ def build_rows(results, errors, kw_cn, kw_en, fx, kinds=DEFAULT_KINDS, keep_all=
             hint = "该站在当前地区/关键词下没有匹配商品"
             if SITES[key].get("need_login"):
                 hint = "需要登录：点「登录匹歪」按钮登录一次后再查"
-            elif hidden:
-                # 有货、但都被分类筛选挡掉了，别让用户误以为「没货」
-                detail = "、".join(f"{k} {n} 条" for k, n in sorted(hidden.items()))
-                hint = f"该站只找到 {detail}，已被当前分类筛选隐藏"
+            elif hidden or hidden_plat:
+                # 有货、但都被筛选挡掉了，别让用户误以为「没货」。
+                # 分开统计「版本」和「平台」，只勾本体时不会误报成「没有匹配商品」。
+                bits = []
+                if hidden:
+                    bits.append("、".join(f"{k} {n} 条" for k, n in sorted(hidden.items())))
+                if hidden_plat:
+                    bits.append("、".join(f"{k} {n} 条"
+                                          for k, n in sorted(hidden_plat.items())))
+                which = ("版本" if hidden and not hidden_plat else
+                         "平台" if hidden_plat and not hidden else "版本/平台")
+                hint = f"该站只找到 {'；'.join(bits)}，已被当前「{which}」筛选隐藏"
             rows.append({"site": name, "title": "[无匹配结果]", "price": None,
                          "cny": None, "url": "", "kind": "提示", "list": None,
-                         "note": hint, "risk": risk})
+                         "plat": "", "note": hint, "risk": risk})
     rows = _dedupe(rows)
     rows.sort(key=lambda r: (r["cny"] is None, r["cny"] or 0))
     return rows

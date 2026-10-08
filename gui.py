@@ -71,6 +71,17 @@ class App:
         ttk.Checkbutton(kbox, text="DLC/附加",
                         variable=self.kdlc_var).grid(row=0, column=2, padx=(4, 0))
 
+        # 平台筛选：和网页版同一套词表（core.PLATFORM_ORDER），默认全勾。
+        # 「未标注」是标题/接口里都没写平台的商品，默认也显示，取消勾选即可只看明确的。
+        self.plat_vars = {}
+        pbox = ttk.Frame(top)
+        pbox.grid(row=2, column=0, columnspan=8, sticky="w", pady=(8, 0))
+        ttk.Label(pbox, text="显示平台:").grid(row=0, column=0, sticky="w")
+        for i, p in enumerate(core.PLATFORM_ORDER):
+            v = tk.BooleanVar(value=True)
+            self.plat_vars[p] = v
+            ttk.Checkbutton(pbox, text=p, variable=v).grid(row=0, column=i + 1, padx=(0, 10))
+
         ttk.Label(top, text="检查要查的站点:").grid(row=1, column=0, sticky="w", pady=(10, 0))
         self.site_vars = {}
         box = ttk.Frame(top)
@@ -84,11 +95,12 @@ class App:
         wrap = ttk.Frame(root, padding=(12, 0))
         wrap.pack(fill="both", expand=True)
 
-        cols = ("site", "kind", "title", "list", "price", "cny", "url")
+        cols = ("site", "kind", "plat", "title", "list", "price", "cny", "url")
         self.tree = ttk.Treeview(wrap, columns=cols, show="headings", height=16)
-        heads = [("site", "站点", 90), ("kind", "版本", 80), ("title", "商品名", 300),
+        heads = [("site", "站点", 90), ("kind", "版本", 80), ("plat", "平台", 86),
+                 ("title", "商品名", 280),
                  ("list", "原价 ¥", 90), ("price", "现价", 120),
-                 ("cny", "折合 ¥", 100), ("url", "网址", 330)]
+                 ("cny", "折合 ¥", 100), ("url", "网址", 300)]
         for c, txt, w in heads:
             self.tree.heading(c, text=txt)
             anchor = "e" if c in ("list", "price", "cny") else "w"
@@ -129,6 +141,10 @@ class App:
         if not kinds:
             messagebox.showwarning("提示", "请至少勾选「本体」或「DLC/附加」其中一个")
             return
+        platforms = [p for p, v in self.plat_vars.items() if v.get()]
+        if not platforms:
+            messagebox.showwarning("提示", "请至少勾选一个平台")
+            return
         self.busy = True
         self.btn.configure(state="disabled", text="比价中…")
         self.status.configure(text="正在获取汇率…")
@@ -137,9 +153,10 @@ class App:
             self.tree.delete(i)
 
         en = self.e_en.get().strip()
-        threading.Thread(target=self._work, args=(kw, en, only, kinds), daemon=True).start()
+        threading.Thread(target=self._work, args=(kw, en, only, kinds, platforms),
+                         daemon=True).start()
 
-    def _work(self, kw, en, only, kinds):
+    def _work(self, kw, en, only, kinds, platforms):
         try:
             self.q.put(("status", "正在获取汇率…"))
             fx = core.fetch_fx()
@@ -151,7 +168,8 @@ class App:
                 kw_en = info["en"] if info else kw
             self.q.put(("status", f"正在抓取各站（英文名：{kw_en}），大约需要半分钟…"))
             results, errors = core.collect(kw, kw_en, only)
-            rows = core.build_rows(results, errors, kw, kw_en, fx, kinds=kinds)
+            rows = core.build_rows(results, errors, kw, kw_en, fx, kinds=kinds,
+                                   platforms=platforms)
             self.q.put(("done", rows, kw, kw_en))
         except Exception as e:
             self.q.put(("error", f"{type(e).__name__}: {e}"))
@@ -236,12 +254,13 @@ class App:
             if r["cny"] is None:
                 note = r.get("note") or r["title"]
                 self.tree.insert("", "end",
-                                 values=(r["site"], "", note, "", "", "", r.get("url", "")),
+                                 values=(r["site"], "", "", note, "", "", "",
+                                         r.get("url", "")),
                                  tags=("none",))
                 continue
             tag = ("best",) if r["cny"] == best else ()
             self.tree.insert("", "end", values=(
-                r["site"], r["kind"], r["title"],
+                r["site"], r["kind"], r.get("plat", ""), r["title"],
                 f'{r["list"]:.2f}' if r["list"] else "-",
                 f'{r["price"]:.2f} {r["cur"]}',
                 f'¥{r["cny"]:.2f}{"  ★最低" if r["cny"] == best else ""}',

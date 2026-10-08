@@ -31,34 +31,37 @@ def pad(s, width, align="left"):
 
 
 def print_table(rows, kw, fx):
-    print("\n" + "=" * 96)
+    W = 111
+    print("\n" + "=" * W)
     print(f"  游戏: {kw}     汇率: 1 USD = {fx['USD']:.3f} CNY | 1 GBP = "
           f"{fx['GBP']:.3f} CNY | 1 EUR = {fx['EUR']:.3f} CNY")
-    print("=" * 96)
-    print(" ".join([pad("站点", 10), pad("渠道", 8), pad("版本", 10), pad("商品名", 36),
+    print("=" * W)
+    print(" ".join([pad("站点", 10), pad("渠道", 8), pad("版本", 10), pad("平台", 12),
+                    pad("商品名", 32),
                     pad("原价", 11, "r"), pad("现价", 16, "r"), pad("≈人民币", 12, "r")]))
-    print("-" * 96)
+    print("-" * W)
     if not rows:
         print("  没有抓到任何结果。检查关键词，或用 --en 指定英文名后重试。")
     best = min((r["cny"] for r in rows if r["cny"]), default=None)
     for r in rows:
         risk = "C2C灰市" if r.get("risk") == "C2C" else "授权"
         if r["cny"] is None:
-            print(pad(r["site"], 10), pad(risk, 8), pad(r["kind"], 10), pad(r["title"][:34], 36))
+            print(pad(r["site"], 10), pad(risk, 8), pad(r["kind"], 10), pad("", 12),
+                  pad(r["title"][:30], 32))
             if r.get("note"):
-                print(" " * 32 + "-> " + r["note"])
+                print(" " * 41 + "-> " + r["note"])
             continue
         p = f"{r['price']:.2f} {r['cur']}"
         lst = f"{r['list']:.2f}" if r["list"] else "-"
         tag = "  ★最低" if r["cny"] == best else ""
         print(" ".join([pad(r["site"], 10), pad(risk, 8), pad(r["kind"], 10),
-                        pad(r["title"][:34], 36),
+                        pad(r.get("plat", ""), 12), pad(r["title"][:30], 32),
                         pad(lst, 11, "r"), pad(p, 16, "r"),
                         pad(f"¥{r['cny']:.2f}{tag}", 12, "r")]))
-    print("-" * 96)
+    print("-" * W)
     for r in rows:
         if r["cny"] is not None and r["url"]:
-            print(f"  ¥{r['cny']:>8.2f}  {r['site']:<8} {r['title'][:34]:<34} {r['url']}")
+            print(f"  ¥{r['cny']:>8.2f}  {r['site']:<8} {r['title'][:30]:<30} {r['url']}")
     print()
 
 
@@ -92,6 +95,10 @@ def main():
     ap.add_argument("--kinds", default="本体,DLC/附加",
                     help="要保留的版本分类，逗号分隔。默认 本体,DLC/附加；"
                          "也可写 道具 / 周边 / 账号（如 --kinds 本体 只看本体）")
+    ap.add_argument("--platforms", default=",".join(core.PLATFORM_ORDER),
+                    help="要保留的平台，逗号分隔。可选 "
+                         + " / ".join(core.PLATFORM_ORDER)
+                         + "；默认全选。如 --platforms Steam 只看标了 Steam 的")
     ap.add_argument("--all", action="store_true",
                     help="不过滤任何分类，含道具/周边/账号（等价于 --kinds 全选）")
     ap.add_argument("--fx", type=float, help="手动指定 1 USD 兑多少 CNY")
@@ -146,7 +153,13 @@ def main():
         kinds = [s.strip() for s in a.kinds.split(",") if s.strip()]
         if not kinds:
             ap.error("--kinds 不能为空")
-    rows = core.build_rows(results, errors, kw_cn, kw_en, fx, kinds=kinds)
+    platforms = [s.strip() for s in (a.platforms or "").split(",") if s.strip()]
+    if not platforms:
+        ap.error("--platforms 不能为空；写 all 表示不过滤平台")
+    if platforms == ["all"]:
+        platforms = None                              # 不过滤平台
+    rows = core.build_rows(results, errors, kw_cn, kw_en, fx, kinds=kinds,
+                           platforms=platforms)
     rows = resort(rows, a.sort, a.desc)
     if a.top:
         rows = rows[: a.top]

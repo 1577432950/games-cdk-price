@@ -39,7 +39,7 @@ LOGIN_LOCK = threading.Lock()
 
 # ------------------------------------------------------------------ 任务
 
-def _run_job(job_id, kw_cn, kw_en_in, sites, kinds):
+def _run_job(job_id, kw_cn, kw_en_in, sites, kinds, platforms):
     def put(**kw):
         with JOBS_LOCK:
             JOBS[job_id].update(kw)
@@ -57,18 +57,19 @@ def _run_job(job_id, kw_cn, kw_en_in, sites, kinds):
 
         put(status=f"正在抓取 {len(sites)} 个站点（英文名：{kw_en}），大约需要 30~60 秒…")
         results, errors = core.collect(kw_cn, kw_en, sites or None)
-        rows = core.build_rows(results, errors, kw_cn, kw_en, fx, kinds=kinds)
+        rows = core.build_rows(results, errors, kw_cn, kw_en, fx, kinds=kinds,
+                               platforms=platforms)
         put(state="done", status="完成", rows=rows)
     except Exception as e:
         put(state="error", status=f"{type(e).__name__}: {e}")
 
 
-def new_job(kw_cn, kw_en, sites, kinds):
+def new_job(kw_cn, kw_en, sites, kinds, platforms):
     job_id = str(int(time.time() * 1000))
     with JOBS_LOCK:
         JOBS[job_id] = {"id": job_id, "state": "running", "status": "排队中…",
                         "rows": [], "fx": core.DEFAULT_FX}
-    threading.Thread(target=_run_job, args=(job_id, kw_cn, kw_en, sites, kinds),
+    threading.Thread(target=_run_job, args=(job_id, kw_cn, kw_en, sites, kinds, platforms),
                      daemon=True).start()
     return job_id
 
@@ -248,8 +249,12 @@ button.ghost.okbtn:hover{background:#ddf0e1}
 .chk{margin-top:14px}
 .chkhead{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:9px}
 .chkhead>span{font-size:12px;color:var(--muted)}
+.chkhead .filters{display:flex;flex-direction:column;align-items:flex-end;gap:7px}
 .chkhead .kindbox{display:inline-flex;align-items:center;gap:14px;font-size:13px;color:#333}
 .chkhead .kindbox label{display:inline-flex;align-items:center;gap:5px;cursor:pointer;user-select:none}
+.chkhead .platbox{gap:11px;flex-wrap:wrap;justify-content:flex-end}
+td.platc{white-space:nowrap;font-size:12px;color:#444}
+td.platc .none-plat{color:#b6bcc4}
 .sites{display:grid;grid-template-columns:repeat(auto-fill,minmax(275px,1fr));gap:9px}
 .srow{border:1px solid var(--bd);border-radius:7px;padding:9px 11px;background:#fcfdfe;
  transition:border-color .15s,box-shadow .15s}
@@ -306,14 +311,29 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
   <div id="lmsg" class="ltip"></div>
   <div class="chk">
     <div class="chkhead"><span>比价站点</span>
-      <span class="kindbox">显示版本：
-        <label><input id="kbase" type="checkbox" checked> 本体</label>
-        <label><input id="kdlc" type="checkbox" checked> DLC/附加</label>
+      <span class="filters">
+        <span class="kindbox">显示版本：
+          <label><input id="kbase" type="checkbox" checked> 本体</label>
+          <label><input id="kdlc" type="checkbox" checked> DLC/附加</label>
+        </span>
+        <span class="kindbox platbox">显示平台：
+          <label><input class="plat" type="checkbox" value="Steam" checked> Steam</label>
+          <label><input class="plat" type="checkbox" value="Epic" checked> Epic</label>
+          <label><input class="plat" type="checkbox" value="GOG" checked> GOG</label>
+          <label><input class="plat" type="checkbox" value="Xbox" checked> Xbox</label>
+          <label><input class="plat" type="checkbox" value="PlayStation" checked> PlayStation</label>
+          <label><input class="plat" type="checkbox" value="Switch" checked> Switch</label>
+          <label><input class="plat" type="checkbox" value="其他平台" checked> 其他平台</label>
+          <label title="标题和站点接口里都没写平台的商品（国内站、多数授权零售站都是这样）"
+          ><input class="plat" type="checkbox" value="未标注" checked> 未标注</label>
+        </span>
       </span>
     </div>
     <div class="sites">__SITES__</div>
   </div>
   <div class="tip">双击结果行可打开商品页。中国区没货的站点会显示「无匹配结果」，这不是抓取失败。<br>
+  <b>平台</b>按商品标题和站点接口里的信息判断。标题里没写平台的（国内站、多数授权零售站都是这样）
+  统一归为「<b>未标注</b>」，默认也会显示；想只看明确标了 Steam 的，就把「未标注」取消勾选。<br>
   <span class="tag auth">授权</span> 官方授权零售，货源正规；
   <span class="tag c2c">C2C 灰市</span> 个人卖家 marketplace，便宜但有黑卡封号风险，自行判断。</div>
 </div>
@@ -322,11 +342,12 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
 
 <div class="card" id="wrap" style="display:none;padding:0;overflow:hidden">
   <table><thead><tr>
-    <th style="width:90px">站点</th><th style="width:78px">渠道</th><th style="width:80px">版本</th><th>商品名</th>
+    <th style="width:90px">站点</th><th style="width:78px">渠道</th><th style="width:80px">版本</th>
+    <th style="width:76px">平台</th><th>商品名</th>
     <th style="width:90px" class="num sortable" data-k="list">原价 ¥<i></i></th>
     <th style="width:110px" class="num sortable" data-k="price">现价<i></i></th>
     <th style="width:100px" class="num sortable" data-k="cny">折合 ¥<i></i></th>
-    <th style="width:330px">网址</th>
+    <th style="width:250px">网址</th>
   </tr></thead><tbody id="tb"></tbody></table>
 </div>
 <div id="note" class="tip"></div>
@@ -442,16 +463,22 @@ function pickKinds(){
   return k;
 }
 
+function pickPlatforms(){
+  return [...document.querySelectorAll('.plat:checked')].map(e=>e.value);
+}
+
 function start(){
   const cn=$('#cn').value.trim(); if(!cn){alert('请先填游戏名');return}
   const kinds=pickKinds();
   if(!kinds.length){alert('请至少勾选「本体」或「DLC/附加」其中一个');return}
+  const platforms=pickPlatforms();
+  if(!platforms.length){alert('请至少勾选一个平台');return}
   const sites=[...document.querySelectorAll('.site:checked')].map(e=>e.value);
   $('#go').disabled=true; $('#tb').innerHTML=''; $('#wrap').style.display='none';
   $('#st').style.display='block'; $('#st').className='status';
   $('#st').innerHTML='正在提交…<div class="bar"><i></i></div>';
   fetch('/api/search',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cn,en:$('#en').value.trim(),sites,kinds})
+    body:JSON.stringify({cn,en:$('#en').value.trim(),sites,kinds,platforms})
   }).then(r=>r.json()).then(d=>{job=d.id; poll()});
 }
 
@@ -502,10 +529,12 @@ function render(rows){
     if(r.cny===null){
       tr.className='none';
       tr.innerHTML=`<td>${r.site}</td><td>${tag(r.risk)}</td>`
-        +`<td colspan="5">${r.note||r.title}</td><td>${r.url||''}</td>`;
+        +`<td colspan="6">${r.note||r.title}</td><td>${r.url||''}</td>`;
     }else{
       const star=(r.cny===best)?' ★':'';
-      tr.innerHTML=`<td>${r.site}</td><td>${tag(r.risk)}</td><td>${r.kind}</td><td>${r.title}</td>`
+      const pl=r.plat?`<span${r.plat==='未标注'?' class="none-plat"':''}>${r.plat}</span>`:'';
+      tr.innerHTML=`<td>${r.site}</td><td>${tag(r.risk)}</td><td>${r.kind}</td>`
+        +`<td class="platc">${pl}</td><td>${r.title}</td>`
         +`<td class="num">${r.list?r.list.toFixed(2):'-'}</td>`
         +`<td class="num">${r.price.toFixed(2)} ${r.cur}</td>`
         +`<td class="num ${r.cny===best?'best':''}">¥${r.cny.toFixed(2)}${star}</td>`
@@ -618,7 +647,11 @@ class Handler(BaseHTTPRequestHandler):
             kinds = d.get("kinds")
             if kinds is None:                      # 老客户端没传就按默认分类
                 kinds = list(core.DEFAULT_KINDS)
-            jid = new_job(d.get("cn", ""), d.get("en", ""), d.get("sites") or [], kinds)
+            platforms = d.get("platforms")
+            if platforms is None:                  # 同上，老客户端按默认平台
+                platforms = list(core.DEFAULT_PLATFORMS)
+            jid = new_job(d.get("cn", ""), d.get("en", ""), d.get("sites") or [],
+                          kinds, platforms)
             self._send(200, json.dumps({"id": jid}))
 
         elif path == "/api/login/start":

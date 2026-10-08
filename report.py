@@ -26,7 +26,7 @@ border-radius:4px;font-size:13px;color:#8c6d1f}}
 <div class="tip">渠道说明：<span class="tag auth">授权</span> 为官方授权零售，
 有正规货源；<span class="tag c2c">C2C 灰市</span> 为个人卖家 marketplace，
 价格更低但有黑卡封号风险，请自行判断。</div>
-<table><tr><th>站点</th><th>渠道</th><th>版本</th><th>商品名</th><th>原价 ¥</th>
+<table><tr><th>站点</th><th>渠道</th><th>版本</th><th>平台</th><th>商品名</th><th>原价 ¥</th>
 <th>现价</th><th>折合 ¥</th><th>网址</th></tr>
 {rows}
 </table></body></html>"""
@@ -45,7 +45,7 @@ def write_html(rows, path, kw, fx):
         if r["cny"] is None:
             note = r.get("note") or r["title"]
             trs.append(f'<tr class="none"><td>{r["site"]}</td><td>{_tag(r.get("risk"))}</td>'
-                       f'<td colspan="5">{note}</td>'
+                       f'<td colspan="6">{note}</td>'
                        f'<td>{r.get("url","")}</td></tr>')
             continue
         star = " ★" if r["cny"] == best else ""
@@ -54,7 +54,7 @@ def write_html(rows, path, kw, fx):
                if r["url"] else "")
         trs.append(
             f'<tr><td>{r["site"]}</td><td>{_tag(r.get("risk"))}</td>'
-            f'<td>{r["kind"]}</td><td>{r["title"]}</td>'
+            f'<td>{r["kind"]}</td><td>{r.get("plat", "")}</td><td>{r["title"]}</td>'
             f'<td class="num">{r["list"] if r["list"] else "-"}</td>'
             f'<td class="num">{price}</td>'
             f'<td class="num price">¥{r["cny"]:.2f}{star}</td><td>{url}</td></tr>')
@@ -72,8 +72,10 @@ def write_json(rows, path):
 def write_csv(rows, path):
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.writer(f)
-        w.writerow(["站点", "渠道", "类型", "商品名", "原价(CNY)", "现价", "币种", "折合CNY", "网址"])
+        w.writerow(["站点", "渠道", "类型", "平台", "商品名", "原价(CNY)", "现价", "币种",
+                    "折合CNY", "网址"])
         for r in rows:
-            w.writerow([r["site"], r.get("risk", ""), r["kind"], r["title"], r["list"] or "",
+            w.writerow([r["site"], r.get("risk", ""), r["kind"], r.get("plat", ""),
+                        r["title"], r["list"] or "",
                         r["price"] or "", r.get("cur", ""), r["cny"] or "", r["url"]])
     return str(path)

@@ -21,6 +21,8 @@
   之后按钮会一直显示「✓ 已登录匹歪」，页面刷新也不会丢
 - **站点卡片自带说明**：每个站在界面上都有一句定位描述，不用先去查它是干嘛的
 - **自动过滤噪声**：剔掉游戏内道具/货币、周边、成品账号、共享账号，以及只命中一半关键词的无关商品
+- **可按版本 / 平台筛选**：勾选框分开控制「本体 / DLC/附加」和「Steam / Epic / GOG / Xbox /
+  PlayStation / Switch / 其他平台 / 未标注」，想看哪个平台就勾哪个
 - **零 Web 框架依赖**：本地网页版用 stdlib `http.server` 实现
 
 ## ⚠️ 先读这段
@@ -55,7 +57,7 @@
 
 1. 自动打开浏览器进入比价页面（没弹出就看黑窗口里打印的 `http://127.0.0.1:端口/`）
 2. 填游戏名 → 勾选站点 → 点「开始比价」，等 30~60 秒
-3. 结果列出 **站点 / 渠道 / 版本 / 商品名 / 原价 / 现价 / 折合人民币 / 网址**
+3. 结果列出 **站点 / 渠道 / 版本 / 平台 / 商品名 / 原价 / 现价 / 折合人民币 / 网址**
 4. 用完点页面上的「退出程序」，或关掉黑窗口
 
 exe 调用系统自带的 Edge / Chrome，**不打包浏览器内核**，所以只有 52MB。
@@ -89,6 +91,7 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | `--sort` | 排序依据：`cny`（折合人民币，默认）/ `price`（现价）/ `list`（原价） |
 | `--desc` | 按价格从高到低排（默认从低到高） |
 | `--kinds` | 要保留的版本分类，逗号分隔，默认 `本体,DLC/附加`；如 `--kinds 本体` 只看本体 |
+| `--platforms` | 要保留的平台，逗号分隔，默认全选（`Steam,Epic,GOG,Xbox,PlayStation,Switch,其他平台,未标注`）；如 `--platforms Steam` 只看标了 Steam 的，`--platforms all` 表示不过滤 |
 | `--all` | 不过滤任何分类（含道具、周边、成品账号） |
 | `--top N` | 只看最便宜的 N 条 |
 | `--fx 7.2` | 手动指定美元汇率 |
@@ -132,12 +135,31 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 - **只看本体，还是连 DLC 一起看**：站点列表右上角有两个勾选框 —— **本体** 和 **DLC/附加**，
   默认都勾着。只想看游戏本身就把「DLC/附加」取消勾选；两个都取消会拦下来不让搜。
   命令行对应 `--kinds 本体` / `--kinds DLC/附加` / `--kinds 本体,DLC/附加`。
+- **按平台筛**：同一行右边还有一排平台勾选框 —— **Steam / Epic / GOG / Xbox /
+  PlayStation / Switch / 其他平台 / 未标注**，默认全勾。想只看 Steam key 就取消其余勾选。
+  命令行对应 `--platforms Steam`。
 - **「版本」列怎么读**：`本体` 是游戏本身；`DLC/附加` 是季票、资料片、原声、同捆包；
   `道具` 是**游戏内道具/货币/掉宝**——比如 Kinguin 上 `... Items > Global > PC > Twitch Drop`
   这种挂单，或 `1000 Apex Coins` 这类充值；`周边` 是实物/设定集；`账号` 是成品号、共享号，不是 CDK。
   **后三类没有勾选框，永远不显示**：一条 ¥21 的掉宝道具混进来，会冒充成「最便宜的本体」。
-  如果某站整站只有被筛掉的商品，结果里会写明「该站只找到 DLC/附加 12 条，已被当前分类筛选隐藏」，
+  如果某站整站只有被筛掉的商品，结果里会写明「该站只找到 DLC/附加 12 条，已被当前「版本」筛选隐藏」，
   而不是含糊的「没有匹配商品」。
+- **「平台」列怎么读，以及为什么会有「未标注」**：平台是从**三个来源**依次取的，取不到就老实
+  标「未标注」，**不猜**：
+  1. **站点接口直接给的**（最可靠）—— 比如 Humble 的搜索接口直接返回 `delivery_methods: ["steam"]`。
+  2. **商品页 URL**（次可靠）—— Loaded(原CDKeys) 的 slug 结尾直接写死了发放方式，标题里反而
+     只有含糊的 `PC`：`.../battlefield-2042-pc-steam` 是 Steam，`...-gold-edition-pc-origin`
+     是 Origin/EA，`...-ultimate-edition-pc-gog` 是 GOG。Kinguin 的 URL 也一样带。
+  3. **商品标题** —— Kinguin / Loaded 的标题写得很全：`PC Steam CD Key`、`GOG CD Key`、
+     `Xbox One & Xbox Series X`、`PS5 Account`、`Nintendo Switch CD Key`、`PC EA App CD Key`。
+  取不到的主要是**国内站（杉果、凤凰）和几个授权零售站（Fanatical、2Game、Gamesplanet、
+  绿人GMG）**—— 它们的标题和接口里都没写平台（GMG 只写 `- PC`，但没说是哪个启动器）。
+  这类统一归为「**未标注**」，**默认照样显示**；想只看明确标了平台的，取消勾选「未标注」即可。
+  `其他平台` 装的是 EA App / Origin / Ubisoft Connect / Battle.net / Rockstar / 微软商店这类
+  非 Steam/Epic/GOG 的 PC 启动器。
+  识别规则在 `core.PLATFORM_PATTERNS`，几条刻意收紧的负样本（`Epic Mickey`、
+  `Assassin's Creed Origins`、`Origin of the Species`、`Sea of Thieves`）在
+  `test_classify.py` 里有回归测试。
 - **广义词兜底**：多词关键词（如 `cyberpunk 2077`）在严格 AND 匹配的站上可能 0 结果，
   此时会自动用其中最长的单词再搜一次，靠相关度过滤兜住噪声。
 - **价格口径**：`原价` 是站点标示的划线价，`现价` 是当前售价，最后一列统一折算人民币。

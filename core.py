@@ -7,6 +7,8 @@ GUI 与 CLI 共用这一层。
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 import time
 import urllib.parse
@@ -38,10 +40,16 @@ _DEBUG_PORT_CANDIDATES = tuple(dict.fromkeys(
     (LOGIN_DEBUG_PORT, 9222, 9223)))
 
 
+# 探本机回环地址必须绕开系统代理。
+# 走代理的话请求会被转发出去、拿到 502/407 之类的应答，看起来就像「这个端口上
+# 没有浏览器」—— 于是明明活着也接管不了，还会被误判成「端口没起来」。
+_NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+
 def _debug_port_alive(port, timeout=0.8):
     """这个端口上有没有一个可接管的浏览器？"""
     try:
-        with urllib.request.urlopen(
+        with _NO_PROXY_OPENER.open(
                 f"http://127.0.0.1:{int(port)}/json/version", timeout=timeout) as r:
             return r.status == 200
     except Exception:
@@ -84,6 +92,133 @@ LOGIN_PROFILE_DIR = (Path(os.environ.get("LOCALAPPDATA")
                           or os.environ.get("XDG_DATA_HOME")
                           or str(Path.home())) / "CDKPrice" / "browser-profile")
 
+# junction（目录联接）放这儿。名字里带 profile-link，一眼能看出是「指向真实 profile 的入口」。
+PROFILE_LINK_ROOT = (Path(os.environ.get("LOCALAPPDATA")
+                          or os.environ.get("XDG_DATA_HOME")
+                          or str(Path.home())) / "CDKPrice")
+
+
+def _profile_link(key, profile):
+    """给真实 profile 建一个 junction，返回联接路径；建不了返回 None。
+
+    **为什么要绕这一下**（本机 Edge 153 实测出来的）：
+    Chromium 136 起出于安全，**在默认用户数据目录上会直接忽略 --remote-debugging-port**。
+    用真实 profile 路径启动，进程起得来（十来个），但调试端口永远不监听 ——
+    表现就是「浏览器明明开了，却怎么都接管不了」。
+    换成指向**同一份** profile 的 junction 路径，端口 0.5 秒就起来了。
+    profile 还是那一份，书签、扩展、已登录的站点一个不少。
+
+    已存在且指向正确就复用；指向别的目标就换个名字，不去删它（删除是不可逆的）。
+    """
+    if os.name != "nt":
+        return None                      # junction 是 Windows 的东西
+    try:
+        PROFILE_LINK_ROOT.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    target = str(Path(profile).resolve())
+    try:
+        real_target = os.path.realpath(target).lower()
+    except OSError:
+        real_target = target.lower()
+
+    for n in range(1, 5):
+        link = PROFILE_LINK_ROOT / (f"{key}-profile-link" if n == 1
+                                    else f"{key}-profile-link-{n}")
+        if link.exists() or link.is_symlink():
+            try:
+                if os.path.realpath(link).lower() == real_target:
+                    return link          # 已经是我们要的那条路
+            except OSError:
+                pass
+            continue                     # 指向别处，换个名字，不删它
+        try:
+            subprocess.run(["cmd", "/c", "mklink", "/J", str(link), target],
+                           capture_output=True, timeout=15)
+        except Exception:
+            return None
+        try:
+            if link.exists() and os.path.realpath(link).lower() == real_target:
+                return link
+        except OSError:
+            pass
+    return None
+
+
+# 起「登录专用窗口」（独立数据目录）时，把真实 profile 里**读得到**的东西搬过去。
+# 目的不是完整克隆，而是让用户能感知到的东西跟过去：已登录的站点、书签、表单。
+# Cookies 通常搬不动（Edge 开着时被独占锁），但匹歪的令牌在 Local Storage 里 ——
+# 实测这部分能复制成功，所以「不用重新登录」这件事在独立窗口上也成立。
+_PROFILE_SYNC_FILES = (
+    "Local State",
+    "Default/Preferences",
+    "Default/Secure Preferences",
+    "Default/Login Data",
+    "Default/Web Data",
+    "Default/Bookmarks",
+    "Default/Network/Cookies",        # 拿得到就拿，拿不到拉倒
+)
+_PROFILE_SYNC_DIRS = (
+    "Default/Local Storage",
+    "Default/Session Storage",
+    "Default/IndexedDB",
+)
+
+
+def _sync_profile_bits(src, dst, max_files=4000):
+    """把真实 profile 里能读的部分复制到独立目录，返回成功搬运的条目数。
+
+    尽力而为：任何一项被锁住都只是跳过，绝不影响启动。
+    先写 `.tmp` 再原子改名 —— 半截的 Preferences / Login Data 会让浏览器出怪问题。
+    """
+    src, dst = Path(src), Path(dst)
+    if not src.exists():
+        return 0
+    try:
+        if src.resolve() == dst.resolve():
+            return 0                  # 同一份目录，不用搬
+    except OSError:
+        return 0
+    done = 0
+    for rel in _PROFILE_SYNC_FILES:
+        s = src / rel
+        if not s.is_file():
+            continue
+        try:
+            d = dst / rel
+            d.parent.mkdir(parents=True, exist_ok=True)
+            tmp = d.with_name(d.name + ".syncing")
+            shutil.copy2(s, tmp)
+            os.replace(tmp, d)
+            done += 1
+        except OSError:
+            continue
+    for rel in _PROFILE_SYNC_DIRS:
+        s = src / rel
+        if not s.is_dir():
+            continue
+        n = 0
+        try:
+            for root, _dirs, files in os.walk(s):
+                for fn in files:
+                    if n >= max_files:
+                        break
+                    sp = Path(root) / fn
+                    dp = dst / sp.relative_to(src)
+                    try:
+                        dp.parent.mkdir(parents=True, exist_ok=True)
+                        tmp = dp.with_name(dp.name + ".syncing")
+                        shutil.copy2(sp, tmp)
+                        os.replace(tmp, dp)
+                        n += 1
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+        if n:
+            done += 1
+    return done
+
 
 def _browser_exe(key):
     for c in BROWSER_SPECS[key]["exe"]:
@@ -115,7 +250,11 @@ def launch_debug_browser(port=None, prefer=None, isolated=False):
     启动起来之后，登录页就能作为新标签开在它当前那个窗口里。
 
     先按「用户自己的数据目录」试 —— 书签、插件、已登录的站点都在，最省事。
-    但他那个浏览器正开着时，Chromium 不允许两个进程共用同一份用户数据目录，
+    注意走的是 `_profile_link()` 建的 **junction 路径**，不是 profile 原始路径：
+    Chromium 136+ 在默认目录上会忽略调试端口，直连必然起不来（见 `_profile_link` 的说明）。
+    同一份 profile，换个入口路径，端口就能起来。
+
+    但他那个浏览器正开着时，同一份 profile 不能被两个进程共用，
     这时**不会**去动他正在用的窗口（关掉会丢标签页和未提交内容），
     而是换一份独立数据目录另起一个**登录专用**窗口。
     所以两条路都不需要用户先退出浏览器，按钮永远不会走进死胡同。
@@ -125,7 +264,6 @@ def launch_debug_browser(port=None, prefer=None, isolated=False):
     数据目录到底被占没被占，最终以「调试端口有没有起来」为准：
     Chromium 在目录被占用时新进程会静悄悄退出，只有端口不会骗人。
     """
-    import subprocess
     port = int(port or LOGIN_DEBUG_PORT)
     if _debug_port_alive(port):
         return True, f"端口 {port} 上已经有可接管的浏览器了，直接点「登录匹歪」即可"
@@ -141,9 +279,10 @@ def launch_debug_browser(port=None, prefer=None, isolated=False):
     # 明确开着（n>0）就跳过，省掉一次注定失败的等待。
     n = _running_pids(cfg["procs"])
     tries = []
-    if not isolated:
-        if own.exists() and not n:
-            tries.append((own, False))
+    if not isolated and own.exists() and not n:
+        link = _profile_link(key, own)
+        if link:
+            tries.append((link, False))
     tries.append((LOGIN_PROFILE_DIR, True))
 
     flags = 0
@@ -157,6 +296,10 @@ def launch_debug_browser(port=None, prefer=None, isolated=False):
             profile.mkdir(parents=True, exist_ok=True)
         except Exception:
             pass
+        if isolated:
+            # 独立目录是空的。先把真实 profile 里读得到的登录态/书签搬过去，
+            # 这样用户在这个新窗口里也是「已经登录过」的样子，不用重新登。
+            _sync_profile_bits(own, profile)
         cmd = [str(_browser_exe(key)), f"--remote-debugging-port={port}",
                f"--user-data-dir={profile}",
                "--no-first-run", "--no-default-browser-check"]
@@ -190,9 +333,12 @@ def browser_situation():
     """现在能不能把登录页开进**用户自己那个**浏览器窗口？
 
     - "attachable"  ：已经有带调试端口的浏览器，直接接管，登录页 = 它当前窗口的新标签
-    - "can_launch"  ：他的浏览器没在跑，用他自己的数据目录起一个就行（那就是他平时的浏览器）
+    - "can_launch"  ：他的浏览器没在跑，用他自己的数据目录起一个就行 ——
+                      走 junction 路径（同一份 profile），所以端口起得来，
+                      起来的就是他平时的浏览器，书签和登录态都在
     - "need_restart"：他正开着浏览器，但那个实例没开调试端口 ——
                       Chromium 不支持事后加端口，只能重启它一次
+                      （重启时同样走 junction，否则端口起不来）
     - "none"        ：没找到 Edge / Chrome
     """
     if find_attachable_browser():
@@ -205,17 +351,24 @@ def browser_situation():
     return "can_launch"
 
 
-def restart_browser_debug(port=None, prefer=None, grace=8):
+def restart_browser_debug(port=None, prefer=None, grace=4):
     """把用户自己的浏览器重启到「带调试端口」的状态，返回 (ok, msg)。
 
     这是「登录页开在你当前那个窗口的新标签里」的**唯一**前提：Chromium 不支持
     给一个已经跑起来的实例事后开调试端口，只能让它重启一次。
 
-    关的时候先软后硬：`taskkill` 不带 /F 是礼貌请求，浏览器会走正常关闭流程、
-    会话能保存下来，标签页才回得来；被「要关闭多个标签页吗」这类确认框挡住、
-    或者宽限期内没退干净，才退回强杀。
+    **这是个有代价的操作，得跟用户说清楚**：本机 Edge 153 实测，`taskkill` 不带 /F
+    （礼貌请求）关不掉它 —— 主进程和后台进程根本不响应，25 秒都退不干净，最后只能强杀。
+    强杀之后 Edge 把上次退出记成 Crashed，`--restore-last-session` 也不认，
+    **标签页回不来**（书签、登录态、扩展都还在，那些是存在 profile 里的）。
+    所以无损的那条路（浏览器关着时直接起 / 另起登录专用窗口）才是首选。
+
+    关的时候仍然先软后硬：软关能让有窗口的那部分走正常关闭流程、尽量把状态落盘，
+    所以先给几秒宽限，再由强杀收尾。
+
+    起来时 `--user-data-dir` 走 junction 路径（**不是** profile 原始路径）——
+    否则 Chromium 136+ 会忽略调试端口，重启完还是接管不了（见 `_profile_link`）。
     """
-    import subprocess
     port = int(port or LOGIN_DEBUG_PORT)
     if _debug_port_alive(port):
         return True, "浏览器已经带调试端口在跑了，不用重启"
@@ -229,6 +382,9 @@ def restart_browser_debug(port=None, prefer=None, grace=8):
     profile = Path(os.path.expandvars(cfg["profile"]))
     if not profile.exists():
         return False, f"没找到 {cfg['name']} 的用户数据目录：{profile}"
+    # 直连默认目录会拿不到调试端口，走 junction 才是能用的那条路。
+    # 建不出联接就退回原路径（老版本 Chromium 上照样能用）。
+    data_dir = _profile_link(key, profile) or profile
 
     for soft in (True, False):
         if not _running_pids(cfg["procs"]):
@@ -254,7 +410,7 @@ def restart_browser_debug(port=None, prefer=None, grace=8):
         flags |= getattr(subprocess, attr, 0)
     try:
         subprocess.Popen([str(_browser_exe(key)), f"--remote-debugging-port={port}",
-                          f"--user-data-dir={profile}", "--restore-last-session",
+                          f"--user-data-dir={data_dir}", "--restore-last-session",
                           "--no-first-run", "--no-default-browser-check"],
                          creationflags=flags, close_fds=True)
     except Exception as e:
@@ -263,8 +419,9 @@ def restart_browser_debug(port=None, prefer=None, grace=8):
     deadline = time.time() + 20
     while time.time() < deadline:
         if _debug_port_alive(port):
-            return True, (f"{cfg['name']} 已带调试端口重启，标签页应该已经回来了；"
-                          "之后登录都会开在它当前窗口的新标签里")
+            return True, (f"{cfg['name']} 已带调试端口重启，之后登录都会开在它当前窗口的"
+                          "新标签里。刚才那几个标签页可能回不来了 —— 书签、登录态、"
+                          "扩展都还在，要用的页面手动重开一下就行")
         time.sleep(0.5)
     return False, f"{cfg['name']} 重启了但调试端口 {port} 没监听上"
 

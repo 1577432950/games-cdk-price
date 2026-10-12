@@ -124,9 +124,11 @@ def _acquire_login_session(force_isolated=False):
 
     1. 接管已开着调试端口的浏览器 —— 通常就是用户自己那个，
        登录页会作为**新标签**开在他当前窗口里（用户要的就是这个）；
-    2. 他没开浏览器，就用他自己的数据目录带调试端口起一个 ——
-       开出来的就是他平时那个浏览器窗口，同样接管成新标签；
+    2. 他没开浏览器，就用他自己的数据目录带调试端口起一个 —— 走 junction 路径，
+       同一份 profile，开出来的就是他平时那个浏览器窗口，同样接管成新标签；
     3. 都拿不到才用独立数据目录起登录专用窗口（force_isolated 时直接走这条）。
+       独立目录是空的，所以起之前会把真实 profile 里读得到的登录态/书签搬过去
+       （见 core._sync_profile_bits），尽量让用户不用重新登录。
 
     他正开着浏览器、而那个实例没有调试端口时**不会**走到这里 ——
     那种情况由 _login_worker 提前拦下并返回 need_restart。
@@ -158,9 +160,11 @@ def _login_worker(force_isolated=False):
     """打开浏览器让用户登录匹歪，登录成功即保存登录态。
 
     登录页尽量开在**用户自己那个浏览器窗口**里当新标签：
-    能接管就接管；他没开浏览器就用他自己的数据目录起一个（那就是他平时的浏览器）。
+    能接管就接管；他没开浏览器就用他自己的数据目录起一个 —— 走 junction 路径，
+    同一份 profile，所以端口起得来，书签和登录态都在，就是他平时的浏览器。
     只有他正开着浏览器、而那个实例没开调试端口时才拿不到 —— 那种情况会提前
-    停下并返回 need_restart，由界面问他要不要重启浏览器（见 /api/login/restart）。
+    停下并返回 need_restart，由界面给他两条路（见 /api/login/restart 和
+    /api/login/start 的 isolated 选项）。
 
     等待期间只轮询一个只读接口判断登录态，不做任何会动浏览器的操作
     （比如反复 save_state()），检测到成功才存一次。原因见 README 的
@@ -177,11 +181,12 @@ def _login_worker(force_isolated=False):
         sit = "isolated" if force_isolated else core.browser_situation()
         if sit == "need_restart":
             # 他正开着浏览器，而那个实例没开调试端口。Chromium 不支持事后加端口，
-            # 只能重启它一次 —— 这会关掉他当前所有窗口，所以交给用户决定。
+            # 只能重启它一次。而重启是有代价的（实测只能强杀，标签页回不来），
+            # 所以两条路都摆出来，把无损的那条排在前面。
             _login_set(state="need_restart", msg=(
-                "要让登录页开在你现在这个浏览器窗口里，需要先把它以调试模式重启一次。"
-                "重启后标签页一般会自动恢复，而且之后就一直有效、不用再重启了。"
-                "不想重启的话，也可以改用独立的登录窗口。"))
+                "你的浏览器正开着，而它当初没带调试模式启动 —— 没法直接接管。"
+                "两条路：另起一个登录专用窗口（不动你现在这个，无损），"
+                "或者把它重启一次（会强关浏览器，刚才那些标签页可能回不来）。"))
             return
         if sit == "none":
             _login_set(state="error", msg="没找到 Edge 或 Chrome，没法打开登录页")
@@ -285,8 +290,10 @@ def start_login(force_isolated=False):
 def _ensure_app_page():
     """浏览器重启后确认本程序页面还在；不在就补一个标签。
 
-    重启浏览器会关掉用户所有标签，虽然 --restore-last-session 一般能把它们带回来，
-    但不保证 —— 页面丢了用户就没法继续操作了，所以这里兜一手。
+    重启浏览器会关掉用户所有标签。实测 Edge 153 上 `--restore-last-session` 并不
+    按预期把标签带回来（它被 Edge 自己的「启动时」设置盖掉了），所以**不能指望**
+    用户那些标签页回来。但本程序这个页面必须还在 —— 不然用户没法继续操作。
+    这个页面是我们自己知道的地址，用 CDP 补开一个就行。
     """
     if not APP_URL:
         return
@@ -316,8 +323,8 @@ def _ensure_app_page():
 def _restart_then_login():
     """把用户自己的浏览器重启到调试模式，然后接着登录。
 
-    会关掉他当前所有浏览器窗口，所以只应该在用户明确点了「重启浏览器并登录」
-    之后调用（前端会先跟他确认）。
+    会关掉他当前所有浏览器窗口，而且实测**标签页回不来**（只能强杀 Edge），
+    所以只应该在用户明确点了「重启浏览器并登录」之后调用（前端会先把代价讲清楚）。
     """
     with LOGIN_LOCK:
         if LOGIN["state"] == "starting":
@@ -502,8 +509,10 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
   <b>平台</b>按商品标题和站点接口里的信息判断。标题里没写平台的（国内站、多数授权零售站都是这样）
   统一归为「<b>未标注</b>」，默认也会显示；想只看明确标了 Steam 的，就把「未标注」取消勾选。<br>
   <b>登录匹歪</b>会尽量把登录页开在<b>你现在这个浏览器窗口</b>里当新标签，不会每点一次就弹一个新窗口。
-  你自己那个浏览器如果正开着、但当初不是以调试模式启动的，会先问你一次要不要重启它 ——
-  重启后标签页会自动恢复，而且之后就一直是新标签，不用再重启了。<br>
+  你自己那个浏览器如果正开着、但当初不是以调试模式启动的，没法直接接管，会给你两个选择：
+  <b>另起一个登录专用窗口</b>（不动你现在这个，无损），或者把它<b>重启一次</b> ——
+  重启能让你继续用当前窗口开新标签，但浏览器只能强关，<b>刚才那些标签页可能回不来</b>。
+  想走无损那条路的话，把浏览器全部关掉再点「登录匹歪」，就会直接用你自己的浏览器开新标签。<br>
   <span class="tag auth">授权</span> 官方授权零售，货源正规；
   <span class="tag c2c">C2C 灰市</span> 个人卖家 marketplace，便宜但有黑卡封号风险，自行判断。</div>
 </div>
@@ -621,36 +630,23 @@ function pollLogin(){
 }
 
 // 拿不到你当前那个窗口时（浏览器开着但没开调试端口）给出的两条路：
-// 重启一次浏览器 —— 之后就一直能开新标签了；或者退一步用独立的登录窗口。
+// 无损的那条排在前面 —— 另起一个登录专用窗口，不动你现在这个浏览器；
+// 重启那条放后面，并且如实说清代价（实测只能强关，标签页回不来）。
 function showRestartPrompt(msg){
   const box=$('#lmsg'), btn=$('#login');
   btn.disabled=false; btn.textContent=LOGIN_TEXT; btn.classList.remove('okbtn');
   box.className='ltip warn'; box.style.display='block';
   box.innerHTML='';
   const p=document.createElement('div');
-  p.textContent=msg||'需要先重启一次浏览器，才能把登录页开在你当前那个窗口里。';
+  p.textContent=msg||'你的浏览器正开着，没法直接接管。下面两条路选一条：';
   box.appendChild(p);
 
   const bar=document.createElement('div'); bar.className='ltipbtns';
-  const yes=document.createElement('button'); yes.textContent='重启浏览器并登录';
-  yes.onclick=async()=>{
-    yes.disabled=true; yes.textContent='正在重启…';
+  const iso=document.createElement('button'); iso.textContent='另起登录专用窗口（不动现在的浏览器）';
+  iso.onclick=async()=>{
+    iso.disabled=true; iso.textContent='正在打开…';
     box.className='ltip'; box.innerHTML='';
-    box.textContent='正在关闭并重新打开你的浏览器（标签页会自动恢复）…';
-    try{
-      await fetch('/api/login/restart',{method:'POST'});
-      pollLogin();
-    }catch(e){
-      box.className='ltip err'; box.textContent='重启失败：'+e;
-      refreshLogin();
-    }
-  };
-  const no=document.createElement('button'); no.className='ghost';
-  no.textContent='改用独立窗口';
-  no.onclick=async()=>{
-    no.disabled=true; no.textContent='正在打开…';
-    box.className='ltip'; box.innerHTML='';
-    box.textContent='正在打开独立的登录窗口…';
+    box.textContent='正在打开独立的登录窗口（会尽量带上你的登录态和书签）…';
     try{
       await fetch('/api/login/start',{method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -661,7 +657,22 @@ function showRestartPrompt(msg){
       refreshLogin();
     }
   };
-  bar.appendChild(yes); bar.appendChild(no);
+  const yes=document.createElement('button'); yes.className='ghost';
+  yes.textContent='重启浏览器并登录';
+  yes.title='会强关浏览器，刚才那些标签页可能回不来';
+  yes.onclick=async()=>{
+    yes.disabled=true; yes.textContent='正在重启…';
+    box.className='ltip'; box.innerHTML='';
+    box.textContent='正在关闭并重新打开你的浏览器（标签页可能回不来）…';
+    try{
+      await fetch('/api/login/restart',{method:'POST'});
+      pollLogin();
+    }catch(e){
+      box.className='ltip err'; box.textContent='重启失败：'+e;
+      refreshLogin();
+    }
+  };
+  bar.appendChild(iso); bar.appendChild(yes);
   box.appendChild(bar);
 }
 
@@ -898,8 +909,8 @@ class Handler(BaseHTTPRequestHandler):
 
         elif path == "/api/login/restart":
             # 把用户自己的浏览器重启到调试模式，然后接着登录。
-            # 这一步会关掉他当前所有浏览器窗口（标签页一般能自动恢复），
-            # 所以前端必须先跟他确认过再调这里。
+            # 这一步会关掉他当前所有浏览器窗口，而且实测标签页回不来（Edge 只能强杀），
+            # 所以前端必须先跟他确认过再调这里（界面上把它排在无损那条后面）。
             threading.Thread(target=_restart_then_login, daemon=True).start()
             self._send(200, json.dumps({"ok": True, "msg": "正在重启浏览器…"},
                                        ensure_ascii=False))

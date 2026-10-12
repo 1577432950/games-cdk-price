@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """命令行版：用带调试端口的参数启动你自己的 Edge / Chrome。
 
-网页版界面上就有这个按钮（「用我自己的浏览器」），一般用不着这个脚本；
-留着是给不方便开界面、或者想写进快捷方式的场景。
+网页版界面上已经没有单独的按钮了 —— 这个能力并进了「登录匹歪」，
+它会按需要自己调 core.launch_debug_browser / core.restart_browser_debug；
+留着这个脚本是给不方便开界面、或者想写进快捷方式的场景。
 
 用法：
     python debug_browser.py              # 自动挑 Edge / Chrome

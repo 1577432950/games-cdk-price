@@ -109,7 +109,7 @@ def _running_pids(names):
     return n
 
 
-def launch_debug_browser(port=None, prefer=None):
+def launch_debug_browser(port=None, prefer=None, isolated=False):
     """带调试端口启动一个浏览器窗口，返回 (ok, msg)。
 
     启动起来之后，登录页就能作为新标签开在它当前那个窗口里。
@@ -119,6 +119,8 @@ def launch_debug_browser(port=None, prefer=None):
     这时**不会**去动他正在用的窗口（关掉会丢标签页和未提交内容），
     而是换一份独立数据目录另起一个**登录专用**窗口。
     所以两条路都不需要用户先退出浏览器，按钮永远不会走进死胡同。
+
+    isolated=True 时跳过他的数据目录，直接用独立目录起登录专用窗口。
 
     数据目录到底被占没被占，最终以「调试端口有没有起来」为准：
     Chromium 在目录被占用时新进程会静悄悄退出，只有端口不会骗人。
@@ -139,8 +141,9 @@ def launch_debug_browser(port=None, prefer=None):
     # 明确开着（n>0）就跳过，省掉一次注定失败的等待。
     n = _running_pids(cfg["procs"])
     tries = []
-    if own.exists() and not n:
-        tries.append((own, False))
+    if not isolated:
+        if own.exists() and not n:
+            tries.append((own, False))
     tries.append((LOGIN_PROFILE_DIR, True))
 
     flags = 0
@@ -183,6 +186,89 @@ def launch_debug_browser(port=None, prefer=None):
     return False, (last or "没能启动浏览器") + "，可以换个端口再试（设环境变量 CDK_DEBUG_PORT）"
 
 
+def browser_situation():
+    """现在能不能把登录页开进**用户自己那个**浏览器窗口？
+
+    - "attachable"  ：已经有带调试端口的浏览器，直接接管，登录页 = 它当前窗口的新标签
+    - "can_launch"  ：他的浏览器没在跑，用他自己的数据目录起一个就行（那就是他平时的浏览器）
+    - "need_restart"：他正开着浏览器，但那个实例没开调试端口 ——
+                      Chromium 不支持事后加端口，只能重启它一次
+    - "none"        ：没找到 Edge / Chrome
+    """
+    if find_attachable_browser():
+        return "attachable"
+    key = next((k for k in ("edge", "chrome") if _browser_exe(k)), None)
+    if not key:
+        return "none"
+    if _running_pids(BROWSER_SPECS[key]["procs"]):
+        return "need_restart"
+    return "can_launch"
+
+
+def restart_browser_debug(port=None, prefer=None, grace=8):
+    """把用户自己的浏览器重启到「带调试端口」的状态，返回 (ok, msg)。
+
+    这是「登录页开在你当前那个窗口的新标签里」的**唯一**前提：Chromium 不支持
+    给一个已经跑起来的实例事后开调试端口，只能让它重启一次。
+
+    关的时候先软后硬：`taskkill` 不带 /F 是礼貌请求，浏览器会走正常关闭流程、
+    会话能保存下来，标签页才回得来；被「要关闭多个标签页吗」这类确认框挡住、
+    或者宽限期内没退干净，才退回强杀。
+    """
+    import subprocess
+    port = int(port or LOGIN_DEBUG_PORT)
+    if _debug_port_alive(port):
+        return True, "浏览器已经带调试端口在跑了，不用重启"
+
+    keys = [prefer] if prefer in BROWSER_SPECS else ["edge", "chrome"]
+    key = next((k for k in keys if _browser_exe(k)), None)
+    if not key:
+        return False, "没找到 Edge 或 Chrome，没法用这个方式"
+    cfg = BROWSER_SPECS[key]
+    exe_name = cfg["procs"][0]
+    profile = Path(os.path.expandvars(cfg["profile"]))
+    if not profile.exists():
+        return False, f"没找到 {cfg['name']} 的用户数据目录：{profile}"
+
+    for soft in (True, False):
+        if not _running_pids(cfg["procs"]):
+            break
+        cmd = ["taskkill", "/IM", exe_name] + ([] if soft else ["/F"])
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=grace + 4)
+        except subprocess.TimeoutExpired:
+            pass                 # 多半被确认框挡住了，交给下一轮强杀
+        except Exception as e:
+            return False, f"关闭 {cfg['name']} 失败：{type(e).__name__}: {e}"
+        deadline = time.time() + (grace if soft else 6)
+        while time.time() < deadline:
+            if not _running_pids(cfg["procs"]):
+                break
+            time.sleep(0.5)
+    if _running_pids(cfg["procs"]):
+        return False, (f"{cfg['name']} 没能在预期时间内退出 —— 可能有个确认对话框挡着，"
+                       "手动关掉它再试一次")
+
+    flags = 0
+    for attr in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+        flags |= getattr(subprocess, attr, 0)
+    try:
+        subprocess.Popen([str(_browser_exe(key)), f"--remote-debugging-port={port}",
+                          f"--user-data-dir={profile}", "--restore-last-session",
+                          "--no-first-run", "--no-default-browser-check"],
+                         creationflags=flags, close_fds=True)
+    except Exception as e:
+        return False, f"启动失败：{type(e).__name__}: {e}"
+
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if _debug_port_alive(port):
+            return True, (f"{cfg['name']} 已带调试端口重启，标签页应该已经回来了；"
+                          "之后登录都会开在它当前窗口的新标签里")
+        time.sleep(0.5)
+    return False, f"{cfg['name']} 重启了但调试端口 {port} 没监听上"
+
+
 
 # ---------------------------------------------------------------- 浏览器会话
 
@@ -198,6 +284,7 @@ class BrowserSession:
         from playwright.sync_api import sync_playwright
         self._sp = sync_playwright().start()
         self.attached = False          # True = 接管的是别人（通常是用户）的浏览器
+        self.owned = False             # True = 这个窗口是我们自己起的（可以清标签）
         self.browser = self._launch(headless, stealth, debug_port)
         ctx_kw = {"user_agent": sites.UA, "locale": "zh-CN",
                   "viewport": {"width": 1440, "height": 900}}
@@ -218,17 +305,21 @@ class BrowserSession:
                 "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
 
     @classmethod
-    def attach(cls, port):
+    def attach(cls, port, owned=False):
         """接管一个已经开着调试端口的浏览器（CDP），复用它的窗口和登录态。
 
         接管之后 new_page() 是**在当前窗口里开新标签**，而不是新开一个窗口 ——
         这正是「登录开在我现在的浏览器里」想要的效果。
         注意：接管的浏览器不是我们起的，close() 时只断开、绝不能关掉它。
+
+        owned=True 表示这个窗口其实是**我们自己刚起的**（独立数据目录那种）。
+        它和用户自己那个浏览器走同一套接管逻辑，区别只在于允许我们清理多余标签。
         """
         from playwright.sync_api import sync_playwright
         s = cls.__new__(cls)
         s._sp = sync_playwright().start()
         s.attached = True
+        s.owned = bool(owned)
         s.browser = s._sp.chromium.connect_over_cdp(f"http://127.0.0.1:{int(port)}")
         ctxs = s.browser.contexts
         # 复用它已有的上下文（= 用户日常那个 profile），没有才新建
@@ -236,21 +327,37 @@ class BrowserSession:
         return s
 
     @classmethod
-    def for_login(cls, site_key="steampy"):
+    def for_login(cls, site_key="steampy", isolated=False):
         """登录专用会话：能接管就接管，接不了才自己起窗口。
 
         接管优先，因为那通常就是用户自己正在用的浏览器 —— 登录页会作为新标签
         开在他当前那个窗口里。自己起的窗口也会打开调试端口，于是**下次**登录
         能接管它，同样只开新标签、不再重复弹窗。
+
+        isolated=True 时跳过接管，直接用独立数据目录起一个登录专用窗口。
+        自己起窗口统一走 launch_debug_browser（Popen 一个持久数据目录的实例），
+        好处是窗口关掉再开还是同一份 profile，登录态能自己留住。
         """
-        port = find_attachable_browser()
-        if port:
-            try:
-                return cls.attach(port)
-            except Exception:
-                pass
-        return cls(headless=False, site_key=site_key, stealth=False,
-                   debug_port=LOGIN_DEBUG_PORT)
+        if not isolated:
+            port = find_attachable_browser()
+            if port:
+                try:
+                    return cls.attach(port)
+                except Exception:
+                    pass
+        ok, _ = launch_debug_browser(port=LOGIN_DEBUG_PORT, isolated=isolated)
+        if ok:
+            port = find_attachable_browser()
+            if port:
+                try:
+                    return cls.attach(port, owned=True)
+                except Exception:
+                    pass
+        # 兜底：连 Popen 都起不来时，退回 Playwright 自带的启动方式
+        s = cls(headless=False, site_key=site_key, stealth=False,
+                debug_port=LOGIN_DEBUG_PORT)
+        s.owned = True                 # 自己起的窗口，允许清理多余标签
+        return s
 
     def _launch(self, headless, stealth=True, debug_port=None):
         args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"] if stealth else []

@@ -384,7 +384,7 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
     <div><button id="go">开始比价</button></div>
     <div><button id="login" class="ghost">登录匹歪</button></div>
     <div><button id="ownbrowser" class="ghost"
-      title="用带调试端口的方式启动你自己的 Edge / Chrome，之后「登录匹歪」会作为新标签开在它当前窗口里。需要先完全退出浏览器。"
+      title="启动一个带调试端口的浏览器窗口，之后「登录匹歪」会作为新标签开在它里面。你的 Edge / Chrome 没开着时直接用你自己的数据目录；正开着时另起一个登录专用窗口，不会动你当前那个，也不用先退出浏览器。"
       >用我自己的浏览器</button></div>
     <div><button id="quit" class="ghost">退出程序</button></div>
   </div>
@@ -414,9 +414,9 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
   <div class="tip">双击结果行可打开商品页。中国区没货的站点会显示「无匹配结果」，这不是抓取失败。<br>
   <b>平台</b>按商品标题和站点接口里的信息判断。标题里没写平台的（国内站、多数授权零售站都是这样）
   统一归为「<b>未标注</b>」，默认也会显示；想只看明确标了 Steam 的，就把「未标注」取消勾选。<br>
-  <b>登录匹歪</b>会在已有窗口里开新标签，不会每点一次就弹一个新窗口。想让它开在你平时用的浏览器里，
-  先点「<b>用我自己的浏览器</b>」（它会带调试端口重启你的 Edge / Chrome，需先完全退出浏览器），
-  再点「登录匹歪」。<br>
+  <b>登录匹歪</b>会在已有窗口里开新标签，不会每点一次就弹一个新窗口。想让登录页开在你平时用的浏览器里，
+  先点「<b>用我自己的浏览器</b>」再点「登录匹歪」：你自己的 Edge / Chrome 没开着就直接用你的数据目录；
+  正开着时会另起一个<b>登录专用</b>窗口（独立数据目录），不会动你当前这个，也不用先退出浏览器。<br>
   <span class="tag auth">授权</span> 官方授权零售，货源正规；
   <span class="tag c2c">C2C 灰市</span> 个人卖家 marketplace，便宜但有黑卡封号风险，自行判断。</div>
 </div>
@@ -511,13 +511,13 @@ async function refreshLogin(){
 }
 refreshLogin();          // 页面一打开就对齐真实登录态
 
-// 用我自己的浏览器：给它带上调试端口重启，之后登录就能开在它当前窗口的新标签里。
-// 后端会等端口起来（最多 20 秒），所以这里要显示「正在启动」。
+// 用我自己的浏览器：起一个带调试端口的窗口，之后登录就能开在它当前窗口的新标签里。
+// 后端会等端口起来（最多 20 秒），所以这里要显示「正在准备」。
 $('#ownbrowser').addEventListener('click',async()=>{
   const btn=$('#ownbrowser'), box=$('#lmsg'), old=btn.textContent;
-  btn.disabled=true; btn.textContent='正在启动…';
+  btn.disabled=true; btn.textContent='正在准备…';
   box.className='ltip'; box.style.display='block';
-  box.textContent='正在启动你自己的浏览器（最多等 20 秒）…';
+  box.textContent='正在准备登录窗口（最多等 20 秒，不用先关掉浏览器）…';
   try{
     const r=await fetch('/api/login/browser',{method:'POST'}).then(r=>r.json());
     box.className = r.ok ? 'ltip ok' : 'ltip err';
@@ -766,8 +766,9 @@ class Handler(BaseHTTPRequestHandler):
                     ensure_ascii=False))
 
         elif path == "/api/login/browser":
-            # 用带调试端口的方式启动用户自己的浏览器，之后登录就能开在它当前窗口里。
-            # 会在服务端最多等 20 秒（等端口起来），所以前端要显示「正在启动…」。
+            # 起一个带调试端口的浏览器窗口，之后登录就能开在它当前窗口里。
+            # 他自己的浏览器正开着时会自动退到独立数据目录（见 core.launch_debug_browser）。
+            # 服务端最多等 20 秒（等端口起来），所以前端要显示「正在准备…」。
             try:
                 ok, msg = core.launch_debug_browser()
             except Exception as e:
@@ -807,8 +808,9 @@ def main():
     ap.add_argument("--port", type=int, default=0, help="端口，默认随机")
     ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
     ap.add_argument("--start-browser", action="store_true",
-                    help="只做一件事：带调试端口启动你自己的 Edge / Chrome，"
-                         "之后登录会开在它当前窗口的新标签里（需先完全退出浏览器）")
+                    help="只做一件事：起一个带调试端口的浏览器窗口，之后登录会开在它当前窗口的"
+                         "新标签里。你的 Edge / Chrome 正开着时会另起一个登录专用窗口，"
+                         "不会动你当前那个")
     a = ap.parse_args()
 
     if a.start_browser:

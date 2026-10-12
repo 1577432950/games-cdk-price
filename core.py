@@ -76,6 +76,15 @@ BROWSER_SPECS = {
 }
 
 
+# 登录专用窗口的数据目录。
+# 用户自己的 Edge / Chrome 正在跑时，Chromium 不允许第二个进程共用同一份用户数据目录，
+# 这时退到这份独立目录另起一个「登录专用」窗口：既不动他正在用的窗口（关掉会丢标签页），
+# 又能把登录态自己留住 —— 下次登录直接接管它，只开新标签。
+LOGIN_PROFILE_DIR = (Path(os.environ.get("LOCALAPPDATA")
+                          or os.environ.get("XDG_DATA_HOME")
+                          or str(Path.home())) / "CDKPrice" / "browser-profile")
+
+
 def _browser_exe(key):
     for c in BROWSER_SPECS[key]["exe"]:
         p = Path(os.path.expandvars(c))
@@ -101,11 +110,18 @@ def _running_pids(names):
 
 
 def launch_debug_browser(port=None, prefer=None):
-    """用带调试端口的参数启动**用户自己的** Edge / Chrome，返回 (ok, msg)。
+    """带调试端口启动一个浏览器窗口，返回 (ok, msg)。
 
-    启动起来之后，登录页就能作为新标签开在他当前那个浏览器窗口里。
-    浏览器已经在跑时**不会**去杀它（那会丢他的标签页和未提交内容），
-    只如实告诉他先完全退出来再试 —— 同一个 profile 不能被两个进程同时用。
+    启动起来之后，登录页就能作为新标签开在它当前那个窗口里。
+
+    先按「用户自己的数据目录」试 —— 书签、插件、已登录的站点都在，最省事。
+    但他那个浏览器正开着时，Chromium 不允许两个进程共用同一份用户数据目录，
+    这时**不会**去动他正在用的窗口（关掉会丢标签页和未提交内容），
+    而是换一份独立数据目录另起一个**登录专用**窗口。
+    所以两条路都不需要用户先退出浏览器，按钮永远不会走进死胡同。
+
+    数据目录到底被占没被占，最终以「调试端口有没有起来」为准：
+    Chromium 在目录被占用时新进程会静悄悄退出，只有端口不会骗人。
     """
     import subprocess
     port = int(port or LOGIN_DEBUG_PORT)
@@ -117,32 +133,54 @@ def launch_debug_browser(port=None, prefer=None):
     if not key:
         return False, "没找到 Edge 或 Chrome，没法用这个方式"
     cfg = BROWSER_SPECS[key]
-    profile = Path(os.path.expandvars(cfg["profile"]))
-    if not profile.exists():
-        return False, f"没找到 {cfg['name']} 的用户数据目录：{profile}"
+    own = Path(os.path.expandvars(cfg["profile"]))
 
+    # psutil 说他的浏览器没在跑（或不知道），才值得先试他自己的数据目录；
+    # 明确开着（n>0）就跳过，省掉一次注定失败的等待。
     n = _running_pids(cfg["procs"])
-    if n:
-        return False, (f"{cfg['name']} 正在运行（{n} 个进程）。同一个用户数据目录不能被"
-                       "两个进程同时使用，请先完全退出它（含托盘里驻留的），再点一次。")
+    tries = []
+    if own.exists() and not n:
+        tries.append((own, False))
+    tries.append((LOGIN_PROFILE_DIR, True))
 
     flags = 0
     for attr in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
         flags |= getattr(subprocess, attr, 0)
-    try:
-        subprocess.Popen([str(_browser_exe(key)), f"--remote-debugging-port={port}",
-                          f"--user-data-dir={profile}"],
-                         creationflags=flags, close_fds=True)
-    except Exception as e:
-        return False, f"启动失败：{type(e).__name__}: {e}"
 
-    for _ in range(40):                    # 最多等 20 秒
-        if _debug_port_alive(port):
-            return True, (f"{cfg['name']} 已带调试端口启动，现在点「登录匹歪」，"
-                          "登录页会作为新标签开在它当前窗口里")
-        time.sleep(0.5)
-    return False, (f"{cfg['name']} 起来了但调试端口没监听上 —— 多半还有别的实例在跑，"
-                   "把它彻底退干净再试一次")
+    last = ""
+    # 两次尝试各自计时（合计最多 20 秒）：一次失败不该把另一次的机会也吃掉。
+    for profile, isolated in tries:
+        try:
+            profile.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        cmd = [str(_browser_exe(key)), f"--remote-debugging-port={port}",
+               f"--user-data-dir={profile}",
+               "--no-first-run", "--no-default-browser-check"]
+        if isolated:
+            # 独立目录是全新的，Edge 会自作主张弹「登录以同步」确认页，压掉它。
+            # 只对独立目录加：用他自己数据目录时不能动他的同步设置。
+            cmd.append("--disable-sync")
+        try:
+            subprocess.Popen(cmd, creationflags=flags, close_fds=True)
+        except Exception as e:
+            last = f"启动失败：{type(e).__name__}: {e}"
+            continue
+        deadline = time.time() + (8 if not isolated else 12)
+        while time.time() < deadline:
+            if _debug_port_alive(port):
+                if isolated:
+                    return True, (
+                        f"{cfg['name']} 正开着，没法共用同一份浏览器数据，"
+                        "所以另起了一个**登录专用**窗口（独立数据目录，不动你正在用的那个）。"
+                        "现在点「登录匹歪」，登录页会作为新标签开在那个新窗口里；"
+                        "这个窗口留着，以后登录都直接在里面开新标签")
+                return True, (f"{cfg['name']} 已带调试端口启动，现在点「登录匹歪」，"
+                              "登录页会作为新标签开在它当前窗口里")
+            time.sleep(0.5)
+        last = f"{cfg['name']} 起来了但调试端口 {port} 没监听上"
+
+    return False, (last or "没能启动浏览器") + "，可以换个端口再试（设环境变量 CDK_DEBUG_PORT）"
 
 
 

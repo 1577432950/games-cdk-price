@@ -76,6 +76,11 @@ def new_job(kw_cn, kw_en, sites, kinds, platforms):
 
 # ------------------------------------------------------------------ 匹歪登录
 
+# 自己起的那个登录窗口跨多次登录复用，这样第二次以后都是「同一窗口开新标签」，
+# 不再每点一次就弹一个新窗口。
+LOGIN_SESSION = None
+
+
 def _login_set(**kw):
     with LOGIN_LOCK:
         LOGIN.update(kw)
@@ -86,8 +91,58 @@ def _login_snapshot():
         return dict(LOGIN)
 
 
+def _drop_login_session(s=None):
+    """丢掉（并关掉）当前缓存的登录窗口。"""
+    global LOGIN_SESSION
+    if s is None:
+        s, LOGIN_SESSION = LOGIN_SESSION, None
+    elif s is LOGIN_SESSION:
+        LOGIN_SESSION = None
+    if s:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _owned_session_alive():
+    """上次自己起的登录窗口还活着吗（用户没把它关掉）。"""
+    s = LOGIN_SESSION
+    if not s or getattr(s, "attached", False):
+        return False
+    try:
+        return s.browser.is_connected() and bool(s.ctx.pages)
+    except Exception:
+        return False
+
+
+def _acquire_login_session():
+    """拿一个登录会话，按「越贴近用户当前窗口越优先」的顺序：
+
+    1. 接管已开着调试端口的浏览器 —— 通常就是用户自己那个，
+       登录页会作为**新标签**开在他当前窗口里（用户要的就是这个）；
+    2. 复用上次自己起的登录窗口 —— 也是开新标签，不再重复弹窗；
+    3. 都没有，才新起一个窗口（这个窗口会留着，供下次复用）。
+    """
+    global LOGIN_SESSION
+    port = core.find_attachable_browser()
+    if port:
+        try:
+            return core.BrowserSession.attach(port)
+        except Exception:
+            pass
+    if _owned_session_alive():
+        return LOGIN_SESSION
+    _drop_login_session()                 # 旧窗口已经废了，清掉再建
+    LOGIN_SESSION = core.BrowserSession.for_login("steampy")
+    return LOGIN_SESSION
+
+
 def _login_worker():
-    """打开有头浏览器让用户登录匹歪，登录成功即自动保存并关闭窗口。
+    """打开浏览器让用户登录匹歪，登录成功即保存登录态。
+
+    登录页尽量开在**已有的窗口**里当新标签：能接管用户自己的浏览器就接管，
+    否则复用上次自己起的那个登录窗口。只有第一次（或窗口被关掉后）才会新开窗口。
 
     等待期间只轮询一个只读接口判断登录态，不做任何会动浏览器的操作
     （比如反复 save_state()），检测到成功才存一次。原因见 README 的
@@ -95,23 +150,29 @@ def _login_worker():
     频繁操作浏览器本身也没有必要，少动它更稳。
     """
     s = None
+    pg = None
     err = None
     logged = False
+    attached = False
     try:
-        s = core.BrowserSession(headless=False, site_key="steampy", stealth=False)
+        s = _acquire_login_session()
+        attached = bool(getattr(s, "attached", False))
         pg = s.new_page()
         pg.goto("https://steampy.com/", wait_until="domcontentloaded", timeout=60000)
         pg.bring_to_front()
-        # 确保窗口里只剩匹歪这一个标签，避免多标签干扰用户
-        for ctx in s.browser.contexts:
-            for p in list(ctx.pages):
-                if p is not pg:
-                    try:
-                        p.close()
-                    except Exception:
-                        pass
-        _login_set(state="waiting",
-                   msg="浏览器窗口已打开，请在窗口里完成登录；登录成功后会自动保存并关闭它")
+        if not attached:
+            # 自己起的窗口：保证里面只剩匹歪这一个标签，避免多标签干扰用户
+            for ctx in s.browser.contexts:
+                for p in list(ctx.pages):
+                    if p is not pg:
+                        try:
+                            p.close()
+                        except Exception:
+                            pass
+        _login_set(state="waiting", msg=(
+            "已在你当前的浏览器里新开一个标签页，请完成登录；登录成功后会自动保存"
+            if attached else
+            "已打开登录窗口，请完成登录；下次登录会在这个窗口里开新标签，不再弹新窗口"))
 
         def page_gone():
             """用户把窗口关掉了吗？
@@ -130,12 +191,14 @@ def _login_worker():
             except Exception:
                 return True
 
-        # 窗口打开时页面里可能已经有旧登录态（storage_state 还原来的）。
-        # 不能把它当成「刚登录成功」—— 按钮这时候写的是「✓ 已登录匹歪」，
-        # 用户点它就是要换号，窗口一开就自动关掉的话根本没法换。
+        # 窗口打开时页面里可能已经有旧登录态（自己起的窗口会还原 storage_state，
+        # 接管的用户浏览器则可能本来就登录着）。本机已经登录着匹歪时，按钮写的是
+        # 「✓ 已登录匹歪」，用户点它就是要换号 —— 这时必须等令牌真的换掉，否则
+        # 窗口一开就被判成功、根本没法换号；本机没登录过则直接采用页面上现成的令牌。
         initial = core.steampy_token(pg)
-        logged = core.steampy_wait_login(s, pg, initial, page_gone,
-                                         timeout=900)   # 最多等 15 分钟，避免线程常驻
+        require_change = core.steampy_check() == "ok"
+        logged = core.steampy_wait_login(s, pg, initial, page_gone, timeout=900,
+                                         require_change=require_change)
 
         if logged:
             try:
@@ -145,19 +208,33 @@ def _login_worker():
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
     finally:
-        if s:
-            try:
-                s.close()
-            except Exception:
-                pass
+        if s is not None:
+            if attached:
+                # 接管的可能是用户自己的浏览器：只关我们开的那个标签，
+                # 再断开连接，绝不能把人家整个浏览器关掉
+                if pg is not None:
+                    try:
+                        pg.close()
+                    except Exception:
+                        pass
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            elif not (logged and _owned_session_alive()):
+                # 自己起的窗口：登录成功就留着给下次复用；失败/超时/已被关掉就收掉
+                _drop_login_session(s)
 
     if err:
         _login_set(state="error", msg=f"登录失败：{err}")
     elif logged:
-        _login_set(state="done", msg="匹歪已登录，登录态已保存，现在可以正常比价了")
+        _login_set(state="done", msg=(
+            "匹歪已登录，登录态已保存，现在可以正常比价了"
+            + ("" if attached else "（登录窗口先留着，下次登录直接在里面开新标签；不用了可以关掉）")))
     else:
         _login_set(state="cancelled",
                    msg="登录窗口已关闭，但没有检测到登录成功；可再点一次「登录匹歪」重试")
+
 
 
 def start_login():
@@ -165,7 +242,7 @@ def start_login():
         # starting 是 worker 接手前的过渡态，也要挡住，否则连点会开出两个窗口
         if LOGIN["state"] in ("starting", "waiting"):
             return False
-        LOGIN.update(state="starting", msg="正在打开浏览器窗口…")
+        LOGIN.update(state="starting", msg="正在准备登录页…")
     threading.Thread(target=_login_worker, daemon=True).start()
     return True
 
@@ -306,6 +383,9 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
     <div><label>英文名（选填，境外站用）</label><input id="en" type="text" placeholder="如 Hogwarts Legacy"></div>
     <div><button id="go">开始比价</button></div>
     <div><button id="login" class="ghost">登录匹歪</button></div>
+    <div><button id="ownbrowser" class="ghost"
+      title="用带调试端口的方式启动你自己的 Edge / Chrome，之后「登录匹歪」会作为新标签开在它当前窗口里。需要先完全退出浏览器。"
+      >用我自己的浏览器</button></div>
     <div><button id="quit" class="ghost">退出程序</button></div>
   </div>
   <div id="lmsg" class="ltip"></div>
@@ -334,6 +414,9 @@ footer .fx{margin-top:9px;padding-top:9px;border-top:1px dashed #e3e6ea;color:#9
   <div class="tip">双击结果行可打开商品页。中国区没货的站点会显示「无匹配结果」，这不是抓取失败。<br>
   <b>平台</b>按商品标题和站点接口里的信息判断。标题里没写平台的（国内站、多数授权零售站都是这样）
   统一归为「<b>未标注</b>」，默认也会显示；想只看明确标了 Steam 的，就把「未标注」取消勾选。<br>
+  <b>登录匹歪</b>会在已有窗口里开新标签，不会每点一次就弹一个新窗口。想让它开在你平时用的浏览器里，
+  先点「<b>用我自己的浏览器</b>」（它会带调试端口重启你的 Edge / Chrome，需先完全退出浏览器），
+  再点「登录匹歪」。<br>
   <span class="tag auth">授权</span> 官方授权零售，货源正规；
   <span class="tag c2c">C2C 灰市</span> 个人卖家 marketplace，便宜但有黑卡封号风险，自行判断。</div>
 </div>
@@ -428,11 +511,29 @@ async function refreshLogin(){
 }
 refreshLogin();          // 页面一打开就对齐真实登录态
 
+// 用我自己的浏览器：给它带上调试端口重启，之后登录就能开在它当前窗口的新标签里。
+// 后端会等端口起来（最多 20 秒），所以这里要显示「正在启动」。
+$('#ownbrowser').addEventListener('click',async()=>{
+  const btn=$('#ownbrowser'), box=$('#lmsg'), old=btn.textContent;
+  btn.disabled=true; btn.textContent='正在启动…';
+  box.className='ltip'; box.style.display='block';
+  box.textContent='正在启动你自己的浏览器（最多等 20 秒）…';
+  try{
+    const r=await fetch('/api/login/browser',{method:'POST'}).then(r=>r.json());
+    box.className = r.ok ? 'ltip ok' : 'ltip err';
+    box.textContent = r.msg || (r.ok ? '已启动' : '没能启动');
+  }catch(e){
+    box.className='ltip err'; box.textContent='启动失败：'+e;
+  }finally{
+    btn.disabled=false; btn.textContent=old;
+  }
+});
+
 // 登录匹歪：写到独立的 #lmsg，避免和搜索进度条抢同一个 #st（两套轮询互相覆盖会闪屏）
 $('#login').addEventListener('click',async()=>{
   const btn=$('#login'), box=$('#lmsg');
   btn.disabled=true; btn.textContent='等待登录…'; btn.classList.remove('okbtn');
-  box.className='ltip'; box.style.display='block'; box.textContent='正在打开浏览器窗口…';
+  box.className='ltip'; box.style.display='block'; box.textContent='正在准备登录页…';
   try{
     const r=await fetch('/api/login/start',{method:'POST'}).then(r=>r.json());
     if(!r.ok){
@@ -664,8 +765,18 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": False, "msg": "已经有一个登录窗口在进行中，请先完成它"},
                     ensure_ascii=False))
 
+        elif path == "/api/login/browser":
+            # 用带调试端口的方式启动用户自己的浏览器，之后登录就能开在它当前窗口里。
+            # 会在服务端最多等 20 秒（等端口起来），所以前端要显示「正在启动…」。
+            try:
+                ok, msg = core.launch_debug_browser()
+            except Exception as e:
+                ok, msg = False, f"{type(e).__name__}: {e}"
+            self._send(200, json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False))
+
         elif path == "/api/quit":
             self._send(200, '{"ok":true}')
+            _drop_login_session()          # 关掉自己起的登录窗口，别在桌面上留孤儿
             threading.Thread(target=self.server.shutdown, daemon=True).start()
 
         else:
@@ -695,7 +806,15 @@ def main():
     ap = argparse.ArgumentParser(description="游戏 CDK 比价（本地网页版）")
     ap.add_argument("--port", type=int, default=0, help="端口，默认随机")
     ap.add_argument("--no-browser", action="store_true", help="不自动打开浏览器")
+    ap.add_argument("--start-browser", action="store_true",
+                    help="只做一件事：带调试端口启动你自己的 Edge / Chrome，"
+                         "之后登录会开在它当前窗口的新标签里（需先完全退出浏览器）")
     a = ap.parse_args()
+
+    if a.start_browser:
+        ok, msg = core.launch_debug_browser()
+        print(("OK：" if ok else "没能启动：") + msg, flush=True)
+        return 0 if ok else 1
 
     port = a.port or free_port()
     reap_orphan_browsers()          # 先收掉上次遗留的登录窗口，避免桌面上堆窗口

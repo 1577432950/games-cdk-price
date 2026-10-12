@@ -17,7 +17,9 @@
 - **可点表头排序**：网页版点「原价 / 现价 / 折合 ¥」表头切换升序降序
 - **直达商品详情页**：每条结果都链到具体商品页，而不是搜索结果页
 - **区分授权渠道与灰市**：C2C 灰市（个人卖家挂单）会打红色标签，便宜但有风险，自己权衡
-- **内置匹歪登录**：点「登录匹歪」开浏览器登录一次，检测到登录成功会自动保存登录态并关掉窗口；
+- **内置匹歪登录**：点「登录匹歪」开浏览器登录一次，检测到登录成功就自动保存登录态；
+  登录页优先开在**已有窗口的新标签**里，不会每点一次弹一个新窗口。想开在你平时用的浏览器里，
+  先点「用我自己的浏览器」（详见下文「登录窗口」）；
   之后按钮会一直显示「✓ 已登录匹歪」，页面刷新也不会丢
 - **站点卡片自带说明**：每个站在界面上都有一句定位描述，不用先去查它是干嘛的
 - **自动过滤噪声**：剔掉游戏内道具/货币、周边、成品账号、共享账号，以及只命中一半关键词的无关商品
@@ -62,6 +64,9 @@
 
 exe 调用系统自带的 Edge / Chrome，**不打包浏览器内核**，所以只有 52MB。
 两个都没有才会回落到 Playwright 自带的 Chromium（那时需自行 `playwright install chromium`）。
+
+exe 还认两个命令行开关（平时用不到）：`--port 8080` 固定端口、`--no-browser` 不自动开浏览器、
+`--start-browser` 只启动一个带调试端口的浏览器（让登录开在它当前窗口的新标签里，见下文「登录窗口」）。
 
 ### 方式二：从源码跑
 
@@ -113,7 +118,7 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | 2Game | 授权 | ✅ | 授权零售站，有中文站且直接显示人民币价，付款方便 | `div.form-product-card-2game-container` + `span.price-main`，中文站直接给人民币价 |
 | Gamesplanet | 授权 | ✅ | 德国授权零售商，上架快、区域选区多，欧区价格参考 | `div.game_list` + `span.price_current`（走 us 站，美元价） |
 | Loaded（原 CDKeys） | 授权 | ✅ | 原 CDKeys 改名而来，老牌授权站，全球区 key 库存全 | Magento 站，`div.product-info` + `span.price` |
-| 匹歪 SteamPY | C2C 灰市 | ⚠️ 需登录 | SteamPY，国内 Steam 交易市场（C2C），玩家自由挂单，价格常最低但需登录 | 直接调站点搜索接口 `xboot/steamGame/searchByName`（`kind: http`，不用浏览器）。登录态在 `localStorage.accessToken`（不是 cookie），请求要带同名 header；网页版点「登录匹歪」登录一次（自动保存并关窗），命令行用 `--login steampy`。详见下文「关于匹歪（SteamPY）的登录」 |
+| 匹歪 SteamPY | C2C 灰市 | ⚠️ 需登录 | SteamPY，国内 Steam 交易市场（C2C），玩家自由挂单，价格常最低但需登录 | 直接调站点搜索接口 `xboot/steamGame/searchByName`（`kind: http`，不用浏览器）。登录态在 `localStorage.accessToken`（不是 cookie），请求要带同名 header；网页版点「登录匹歪」登录一次（登录页开在已有窗口的新标签里，不再重复弹窗），命令行用 `--login steampy`。详见下文「关于匹歪（SteamPY）的登录」 |
 | Kinguin | C2C 灰市 | ✅ | Kinguin 灰色市场（C2C），个人卖家挂单，低价但存在黑卡 key 被回收风险 | `span.min` 价格 + 向上找 `a[href*="/category/"]` 拿标题链接（类名是哈希，不能依赖） |
 
 ### 没能加进来的站
@@ -223,6 +228,37 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
   窗口一开就会被判成功然后立刻自动关掉，用户根本来不及换号。
   如果用户没换号直接关窗，因为登录态仍然有效，状态会落到 `done` 而不是 `cancelled`。
 
+## 登录窗口：为什么是「开新标签」而不是「弹新窗口」
+
+点「登录匹歪」需要开一个浏览器让你登录。老版本每次都新弹一个窗口，用起来很烦。
+现在的规则是**优先开在已有的窗口里当新标签**，按下面的顺序挑：
+
+1. **接管你自己正在用的浏览器**（如果它开着调试端口）—— 登录页就是你当前窗口里的一个新标签，
+   用的还是你自己的 profile，书签、插件、已登录的网站都在。
+   想走这条路：先**完全退出**浏览器，再点界面上的「**用我自己的浏览器**」按钮
+   （它带 `--remote-debugging-port=9222` 和你的真实 profile 把浏览器重新拉起来）。
+   命令行等价物：`python debug_browser.py`。
+   为什么必须先退出：同一个 profile 不能被两个进程同时占用。程序**不会**去杀你的浏览器，
+   只会如实提示你先退出来。
+2. **复用上次自己起的那个登录窗口** —— 同样只开新标签。所以窗口只会弹第一次
+   （或者在你手动关掉它之后）。
+3. 都没有，才新起一个窗口。
+
+登录成功后，自己起的那个窗口会**留着**（供下次复用，不用了直接关掉就行）；
+接管的浏览器则只关掉我们开的那一个标签，绝不会动你的窗口。
+
+实现上几个容易踩的地方：
+
+- 接管靠 CDP（`connect_over_cdp`）。**断开连接不等于关浏览器** ——
+  接管的浏览器不是我们起的，收尾时只 `stop()` 掉 Playwright 驱动，
+  不能调 `browser.close()`，否则会把用户自己的浏览器一起关掉。
+- 接管时页面可能**本来就登录着匹歪**。本机没登录过 → 直接采用页面上现成的有效令牌；
+  本机已有有效登录态 → 说明用户点「登录」是想换号，仍然要求令牌真的换掉
+  （`steampy_wait_login(require_change=...)`）。
+- 自己起的登录窗口会带 `--remote-debugging-port`，下次登录就能接管它 ——
+  这就是「不再重复弹窗」的实现方式。
+- 退出程序（`/api/quit`）时会关掉自己起的登录窗口，免得在桌面上留孤儿。
+
 ## 为什么有些游戏在匹歪搜不到
 
 早期版本是用浏览器模拟往搜索框里打字回车。但匹歪的搜索框在页面上是 `display:none`，
@@ -259,7 +295,7 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 现在的处理：
 
 - 等待期间不再反复调 `save_state()`，改成轮询一个只读接口（`/xboot/user/info`）判断登录态，
-  只有确认登录成功才存一次登录态，然后自动关掉窗口。
+  只有确认登录成功才存一次登录态。
 - 启动和退出时都会清理遗留的 Playwright 浏览器（判定条件是命令行里带
   `playwright_chromiumdev_profile`，日常用的 Edge/Chrome 不会有这个参数，不会误杀）。
 - 关窗检测看 `page.is_closed()` 而不是 `browser.is_connected()`：点 X 关掉窗口后 Edge 的进程
@@ -273,10 +309,11 @@ python cdk_price.py --login steampy          # 匹歪需先登录一次
 | 文件 | 作用 |
 | --- | --- |
 | `web_app.py` | **本地网页版**，exe 的入口（stdlib `http.server`，无第三方 Web 框架） |
-| `core.py` | 浏览器会话（Edge→Chrome→Chromium）、并发抓取、汇率、英文名解析、结果整理 |
+| `core.py` | 浏览器会话（Edge→Chrome→Chromium，支持 CDP 接管已有浏览器）、并发抓取、汇率、英文名解析、结果整理 |
 | `sites.py` | 各站适配器（改选择器改这里） |
 | `cdk_price.py` | 命令行入口 |
 | `report.py` | HTML / JSON / CSV 导出 |
+| `debug_browser.py` | 命令行小工具：带调试端口启动你自己的 Edge / Chrome，让登录开在它当前窗口的新标签里（网页版界面上有同样的按钮，一般用不着它） |
 | `gui.py` | tkinter 桌面窗口版（**当前 Python 没带 tkinter，跑不起来**；换带 tkinter 的 Python 可用） |
 | `diag_*.py` `probe*.py` `dump_*.py` `sniff.py` `dom_*.py` `discover.py` `fhyx_check.py` `gmg_test.py` | 开发期勘察各站接口和 DOM 的脚本，站点改版后可用来重新侦察（**全部在 `.gitignore` 里，不入库**） |
 | `test_*.py` `verify_*.py` `smoke_*.py` `shot*.py` | 开发期自测脚本：登录状态机、token 存取、打包后 exe 的端到端流程、界面截图。同样不入库 |

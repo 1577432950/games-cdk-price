@@ -10,6 +10,7 @@ import re
 import sys
 import time
 import urllib.parse
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -28,6 +29,122 @@ _APPDATA = Path(os.environ.get("APPDATA") or os.environ.get("XDG_DATA_HOME")
 STATE_DIR = _APPDATA / "CDKPrice"
 DEFAULT_FX = {"USD": 7.10, "GBP": 9.10, "EUR": 7.80, "CNY": 1.0}
 
+# 登录用的浏览器调试端口。端口活着 = 有个浏览器可以被「接管」，
+# 接管之后登录页会作为**新标签**开在它当前窗口里，而不是另弹一个窗口。
+# 用户自己那个浏览器如果带 --remote-debugging-port 启动，这里就能认出它。
+LOGIN_DEBUG_PORT = int(os.environ.get("CDK_DEBUG_PORT") or 9222)
+# 自己起的登录窗口也开在这个端口上，下次登录就能接管它、只开新标签
+_DEBUG_PORT_CANDIDATES = tuple(dict.fromkeys(
+    (LOGIN_DEBUG_PORT, 9222, 9223)))
+
+
+def _debug_port_alive(port, timeout=0.8):
+    """这个端口上有没有一个可接管的浏览器？"""
+    try:
+        with urllib.request.urlopen(
+                f"http://127.0.0.1:{int(port)}/json/version", timeout=timeout) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+def find_attachable_browser(ports=None):
+    """找一个能被接管的浏览器，返回它的调试端口；没有返回 None。"""
+    for p in (ports or _DEBUG_PORT_CANDIDATES):
+        if _debug_port_alive(p):
+            return p
+    return None
+
+
+# 用户自己的浏览器怎么找。profile 用真实目录，这样书签、插件、已登录的站点都在。
+BROWSER_SPECS = {
+    "edge": {
+        "name": "Microsoft Edge",
+        "exe": [r"%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe",
+                r"%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"],
+        "profile": r"%LOCALAPPDATA%\Microsoft\Edge\User Data",
+        "procs": ("msedge.exe",),
+    },
+    "chrome": {
+        "name": "Google Chrome",
+        "exe": [r"%ProgramFiles%\Google\Chrome\Application\chrome.exe",
+                r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe",
+                r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"],
+        "profile": r"%LOCALAPPDATA%\Google\Chrome\User Data",
+        "procs": ("chrome.exe",),
+    },
+}
+
+
+def _browser_exe(key):
+    for c in BROWSER_SPECS[key]["exe"]:
+        p = Path(os.path.expandvars(c))
+        if p.exists():
+            return p
+    return None
+
+
+def _running_pids(names):
+    """这些进程名有几个在跑；拿不到 psutil 就返回 None（= 不知道）。"""
+    try:
+        import psutil
+    except Exception:
+        return None
+    n = 0
+    try:
+        for p in psutil.process_iter(["name"]):
+            if (p.info["name"] or "").lower() in names:
+                n += 1
+    except Exception:
+        return None
+    return n
+
+
+def launch_debug_browser(port=None, prefer=None):
+    """用带调试端口的参数启动**用户自己的** Edge / Chrome，返回 (ok, msg)。
+
+    启动起来之后，登录页就能作为新标签开在他当前那个浏览器窗口里。
+    浏览器已经在跑时**不会**去杀它（那会丢他的标签页和未提交内容），
+    只如实告诉他先完全退出来再试 —— 同一个 profile 不能被两个进程同时用。
+    """
+    import subprocess
+    port = int(port or LOGIN_DEBUG_PORT)
+    if _debug_port_alive(port):
+        return True, f"端口 {port} 上已经有可接管的浏览器了，直接点「登录匹歪」即可"
+
+    keys = [prefer] if prefer in BROWSER_SPECS else ["edge", "chrome"]
+    key = next((k for k in keys if _browser_exe(k)), None)
+    if not key:
+        return False, "没找到 Edge 或 Chrome，没法用这个方式"
+    cfg = BROWSER_SPECS[key]
+    profile = Path(os.path.expandvars(cfg["profile"]))
+    if not profile.exists():
+        return False, f"没找到 {cfg['name']} 的用户数据目录：{profile}"
+
+    n = _running_pids(cfg["procs"])
+    if n:
+        return False, (f"{cfg['name']} 正在运行（{n} 个进程）。同一个用户数据目录不能被"
+                       "两个进程同时使用，请先完全退出它（含托盘里驻留的），再点一次。")
+
+    flags = 0
+    for attr in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+        flags |= getattr(subprocess, attr, 0)
+    try:
+        subprocess.Popen([str(_browser_exe(key)), f"--remote-debugging-port={port}",
+                          f"--user-data-dir={profile}"],
+                         creationflags=flags, close_fds=True)
+    except Exception as e:
+        return False, f"启动失败：{type(e).__name__}: {e}"
+
+    for _ in range(40):                    # 最多等 20 秒
+        if _debug_port_alive(port):
+            return True, (f"{cfg['name']} 已带调试端口启动，现在点「登录匹歪」，"
+                          "登录页会作为新标签开在它当前窗口里")
+        time.sleep(0.5)
+    return False, (f"{cfg['name']} 起来了但调试端口没监听上 —— 多半还有别的实例在跑，"
+                   "把它彻底退干净再试一次")
+
+
 
 # ---------------------------------------------------------------- 浏览器会话
 
@@ -39,10 +156,11 @@ class BrowserSession:
     伪装标志反而可能让目标站的人机验证（如腾讯滑块）反复触发。
     """
 
-    def __init__(self, headless=True, site_key=None, stealth=True):
+    def __init__(self, headless=True, site_key=None, stealth=True, debug_port=None):
         from playwright.sync_api import sync_playwright
         self._sp = sync_playwright().start()
-        self.browser = self._launch(headless, stealth)
+        self.attached = False          # True = 接管的是别人（通常是用户）的浏览器
+        self.browser = self._launch(headless, stealth, debug_port)
         ctx_kw = {"user_agent": sites.UA, "locale": "zh-CN",
                   "viewport": {"width": 1440, "height": 900}}
         # 登录态整体交给 storage_state 还原：它同时带 cookie 和 localStorage。
@@ -61,8 +179,46 @@ class BrowserSession:
             self.ctx.add_init_script(
                 "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
 
-    def _launch(self, headless, stealth=True):
+    @classmethod
+    def attach(cls, port):
+        """接管一个已经开着调试端口的浏览器（CDP），复用它的窗口和登录态。
+
+        接管之后 new_page() 是**在当前窗口里开新标签**，而不是新开一个窗口 ——
+        这正是「登录开在我现在的浏览器里」想要的效果。
+        注意：接管的浏览器不是我们起的，close() 时只断开、绝不能关掉它。
+        """
+        from playwright.sync_api import sync_playwright
+        s = cls.__new__(cls)
+        s._sp = sync_playwright().start()
+        s.attached = True
+        s.browser = s._sp.chromium.connect_over_cdp(f"http://127.0.0.1:{int(port)}")
+        ctxs = s.browser.contexts
+        # 复用它已有的上下文（= 用户日常那个 profile），没有才新建
+        s.ctx = ctxs[0] if ctxs else s.browser.new_context()
+        return s
+
+    @classmethod
+    def for_login(cls, site_key="steampy"):
+        """登录专用会话：能接管就接管，接不了才自己起窗口。
+
+        接管优先，因为那通常就是用户自己正在用的浏览器 —— 登录页会作为新标签
+        开在他当前那个窗口里。自己起的窗口也会打开调试端口，于是**下次**登录
+        能接管它，同样只开新标签、不再重复弹窗。
+        """
+        port = find_attachable_browser()
+        if port:
+            try:
+                return cls.attach(port)
+            except Exception:
+                pass
+        return cls(headless=False, site_key=site_key, stealth=False,
+                   debug_port=LOGIN_DEBUG_PORT)
+
+    def _launch(self, headless, stealth=True, debug_port=None):
         args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"] if stealth else []
+        if debug_port:
+            # 留着调试端口，下次登录就能接管这个窗口（只开新标签，不再弹新窗口）
+            args = args + [f"--remote-debugging-port={int(debug_port)}"]
         for channel in ("msedge", "chrome"):
             try:
                 return self._sp.chromium.launch(channel=channel, headless=headless, args=args)
@@ -77,7 +233,20 @@ class BrowserSession:
         STATE_DIR.mkdir(exist_ok=True)
         self.ctx.storage_state(path=str(STATE_DIR / f"{site_key}.json"))
 
-    def close(self):
+    def close(self, keep_window=False):
+        """关掉会话。
+
+        keep_window=True（或接管模式下）只断开连接、**不关浏览器窗口**：
+        接管的可能是用户自己的浏览器，关掉它等于把人家的窗口关了；
+        自己起的窗口留着则能让下次登录复用它、只开新标签。
+        """
+        if self.attached or keep_window:
+            # 只停掉 Playwright 驱动 = 断开 CDP 连接，对方浏览器不受影响
+            try:
+                self._sp.stop()
+            except Exception:
+                pass
+            return
         # 三步各自独立 try：任何一步失败都不能拖累后面的关闭动作，
         # 否则会留下关不掉的浏览器窗口（曾经就是 ctx.close() 抛异常导致 browser 没关）
         for fn in (self.ctx.close, self.browser.close, self._sp.stop):
@@ -87,6 +256,7 @@ class BrowserSession:
                 pass
 
 
+
 def _safe(fn, default):
     try:
         return fn()
@@ -94,12 +264,16 @@ def _safe(fn, default):
         return default
 
 
-def steampy_wait_login(s, pg, initial="", page_gone=None, timeout=900, poll=2):
+def steampy_wait_login(s, pg, initial="", page_gone=None, timeout=900, poll=2,
+                       require_change=True):
     """等用户在窗口里完成匹歪登录，成功返回 True。
 
     `initial` 是窗口刚打开时页面里已有的令牌（可能是 storage_state 还原来的旧登录态）。
     判定成功要求令牌**变成另一个**，不能只看「当前有有效令牌」：否则本机已经登录过时，
     用户点「重新登录」想换号，窗口一开就被判成功然后自动关掉，根本没法换。
+
+    require_change=False 时改为「页面上有有效令牌就算登录」：接管用户自己的浏览器时，
+    他很可能早就登录着匹歪了，这时没必要逼他退出再登一遍。
 
     page_gone 是可选回调，返回 True 表示用户把窗口关了。
     """
@@ -111,35 +285,43 @@ def steampy_wait_login(s, pg, initial="", page_gone=None, timeout=900, poll=2):
             # 本来就有旧登录态、只是不想换号了的用户，不该被报成「没检测到登录」。
             return steampy_logged_in(s, pg) or steampy_check() == "ok"
         tok = steampy_token(pg)
-        if tok and tok != initial and steampy_logged_in(s, pg):
+        if tok and (tok != initial or not require_change) and steampy_logged_in(s, pg):
             return True
         time.sleep(poll)
     return False
 
 
 def login(site_key, on_ready=None):
-    """打开有头浏览器让用户登录一次，保存登录态。on_ready 在浏览器打开后回调。
+    """打开浏览器让用户登录一次，保存登录态。on_ready 在浏览器打开后回调。
 
     匹歪的令牌存在 localStorage 里，所以要等它真的登录成功再保存；
     其它站点沿用「打开 → 回调 → 保存」的老流程。
+
+    会优先接管一个已开着调试端口的浏览器（通常就是用户自己那个），
+    这样登录页开在他当前窗口的新标签里，而不是另弹一个窗口。
     """
     url = {"steampy": "https://steampy.com/", "sonkwo": "https://www.sonkwo.cn/",
            "fhyx": "https://www.fhyx.com/", "gmg": "https://www.greenmangaming.com/zh/",
            "fanatical": "https://www.fanatical.com/zh-hans/"}.get(site_key, "https://steampy.com/")
-    s = BrowserSession(headless=False)
+    s = BrowserSession.for_login(site_key)
     pg = s.new_page()
     pg.goto(url, wait_until="domcontentloaded", timeout=60000)
     if on_ready:
         on_ready()
     if site_key == "steampy":
-        print("请在弹出的窗口里登录匹歪，登录成功后会自动保存并关闭窗口…", flush=True)
+        print("请在弹出的窗口里登录匹歪，登录成功后会自动保存…", flush=True)
         initial = steampy_token(pg)          # 还原出来的旧登录态，不能当成「刚登录」
-        if steampy_wait_login(s, pg, initial, lambda: pg.is_closed()):
+        # 本机已经登录着匹歪时，用户点登录多半是想换号 —— 这时必须等令牌真的换掉；
+        # 本机没登录过，那页面上现成的有效令牌直接采用就好（接管用户浏览器时很常见）。
+        if steampy_wait_login(s, pg, initial, lambda: pg.is_closed(),
+                              require_change=steampy_check() == "ok"):
             print("已检测到登录成功。", flush=True)
         else:
             print("窗口已关闭，未检测到新的登录。", flush=True)
     s.save_state(site_key)
-    s.close()
+    if s.attached:
+        _safe(pg.close, None)                # 只关我们开的那个标签，别动用户的浏览器
+    s.close(keep_window=s.attached)
     return str(STATE_DIR / f"{site_key}.json")
 
 

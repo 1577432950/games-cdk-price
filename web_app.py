@@ -33,7 +33,7 @@ JOBS = {}
 JOBS_LOCK = threading.Lock()
 
 # 匹歪登录：状态在后台线程与 HTTP 线程之间共享，用锁保护
-LOGIN = {"state": "idle", "msg": ""}
+LOGIN = {"state": "idle", "msg": "", "ts": 0.0}
 LOGIN_LOCK = threading.Lock()
 
 
@@ -83,15 +83,37 @@ LOGIN_SESSION = None
 # 本程序页面自己的地址。浏览器被重启后用它确认页面还在、不在就补开一个。
 APP_URL = ""
 
+# 正在跑登录流程 / 正在重启浏览器的线程。
+# 「忙不忙」一律以**线程还活着**为准，不看状态字符串 —— 状态是会卡住的：
+# 上一版 _restart_then_login 先把状态置成 starting 再去调 start_login()，
+# 而 start_login() 开头就是「状态是 starting 就拒绝」，于是重启完浏览器后
+# 根本没人接着登录，状态永远停在 starting，之后每次点「登录匹歪」都被告知
+# 「已经有一个登录窗口在进行中，请先完成它」，只能重启程序才恢复。
+LOGIN_THREAD = None
+RESTART_THREAD = None
+
 
 def _login_set(**kw):
     with LOGIN_LOCK:
         LOGIN.update(kw)
+        LOGIN["ts"] = time.time()
 
 
 def _login_snapshot():
     with LOGIN_LOCK:
         return dict(LOGIN)
+
+
+def _busy_thread():
+    """还在跑的登录/重启线程；没有就返回 None。
+
+    只认线程，不认状态：状态可能因为某条分支提前 return 而停在中间值，
+    但线程一旦结束就绝不会再产出任何东西，这时必须允许重来。
+    """
+    for t in (LOGIN_THREAD, RESTART_THREAD):
+        if t is not None and t.is_alive():
+            return t
+    return None
 
 
 def _drop_login_session(s=None):
@@ -278,13 +300,29 @@ def _login_worker(force_isolated=False):
 
 
 def start_login(force_isolated=False):
+    """起一个后台线程去开登录页，返回是否真的开工了。
+
+    判「已有登录窗口在进行中」看的是线程，不是状态字符串 —— 状态卡住过一次
+    （见 LOGIN_THREAD 那段注释），卡住以后用户就再也点不动这个按钮了。
+    线程在锁里就 start()，保证连点时第二次一定能看到它在跑。
+    """
+    global LOGIN_THREAD
     with LOGIN_LOCK:
-        # starting 是 worker 接手前的过渡态，也要挡住，否则连点会开出两个窗口
-        if LOGIN["state"] in ("starting", "waiting"):
+        if _busy_thread() is not None:
             return False
-        LOGIN.update(state="starting", msg="正在准备登录页…")
-    threading.Thread(target=_login_worker, args=(force_isolated,), daemon=True).start()
+        LOGIN.update(state="starting", msg="正在准备登录页…", ts=time.time())
+        LOGIN_THREAD = threading.Thread(target=_login_worker,
+                                        args=(force_isolated,), daemon=True)
+        LOGIN_THREAD.start()
     return True
+
+
+def login_busy_msg():
+    """「已经有一个登录窗口在进行中」这句话带上时长，方便用户判断是不是卡住了。"""
+    snap = _login_snapshot()
+    secs = int(max(1, time.time() - (snap.get("ts") or 0)))
+    return (f"上一个登录窗口还没结束（已进行 {secs} 秒），"
+            "请先在它里面完成登录；如果那个窗口已经关了，再点一次就会重开")
 
 
 def _ensure_app_page():
@@ -320,23 +358,46 @@ def _ensure_app_page():
             pass
 
 
+def start_restart_login():
+    """把「重启浏览器 → 接着登录」整条流程丢到后台，返回是否真的开工了。"""
+    global RESTART_THREAD
+    with LOGIN_LOCK:
+        if _busy_thread() is not None:
+            return False
+        LOGIN.update(state="restarting", msg="正在重启浏览器…", ts=time.time())
+        RESTART_THREAD = threading.Thread(target=_restart_then_login, daemon=True)
+        RESTART_THREAD.start()
+    return True
+
+
 def _restart_then_login():
     """把用户自己的浏览器重启到调试模式，然后接着登录。
 
     会关掉他当前所有浏览器窗口，而且实测**标签页回不来**（只能强杀 Edge），
     所以只应该在用户明确点了「重启浏览器并登录」之后调用（前端会先把代价讲清楚）。
+
+    收尾这里**不能**调 start_login()：此刻状态是 restarting、重启线程自己也还活着，
+    start_login() 的忙检查会把它自己挡住 —— 上一版就是死在这里，重启完浏览器后
+    没人接着登录，状态永远停在 starting。所以直接起 worker。
     """
-    with LOGIN_LOCK:
-        if LOGIN["state"] == "starting":
-            return
-        LOGIN.update(state="starting", msg="正在重启浏览器…")
-    ok, msg = core.restart_browser_debug()
+    global LOGIN_THREAD
+    try:
+        ok, msg = core.restart_browser_debug()
+    except Exception as e:
+        _login_set(state="error", msg=f"重启浏览器失败：{type(e).__name__}: {e}")
+        return
     if not ok:
         _login_set(state="error", msg=msg)
         return
-    _ensure_app_page()
-    _login_set(state="starting", msg="浏览器已重启，正在准备登录页…")
-    start_login()
+    try:
+        _ensure_app_page()
+    except Exception:
+        pass                     # 补页面失败不影响登录，别让它把整条流程带崩
+    with LOGIN_LOCK:
+        LOGIN.update(state="starting", msg="浏览器已重启，正在准备登录页…",
+                     ts=time.time())
+        LOGIN_THREAD = threading.Thread(target=_login_worker, daemon=True)
+        LOGIN_THREAD.start()
 
 
 # ------------------------------------------------------- 遗留浏览器清理
@@ -609,9 +670,10 @@ refreshLogin();          // 页面一打开就对齐真实登录态
 
 // 登录轮询：登录页开在哪个窗口、登录成没成功，都以后端状态为准。
 // 写到独立的 #lmsg，避免和搜索进度条抢同一个 #st（两套轮询互相覆盖会闪屏）。
-let loginTimer=null;
+let loginTimer=null, loginSeen='', loginTick=0;
 function pollLogin(){
   if(loginTimer) clearInterval(loginTimer);
+  loginSeen=''; loginTick=0;
   loginTimer=setInterval(async()=>{
     let s;
     try{ s=await fetch('/api/login/status').then(r=>r.json()); }catch(e){ return }
@@ -621,10 +683,23 @@ function pollLogin(){
       showRestartPrompt(s.msg);
       return;
     }
+    if(s.state!==loginSeen){ loginSeen=s.state; loginTick=0; } else { loginTick++; }
     if(s.msg) box.textContent=s.msg;
     if(s.state==='done'||s.state==='error'||s.state==='cancelled'){
       clearInterval(loginTimer); loginTimer=null;
       refreshLogin();     // 结束时以后端校验为准，而不是硬写回「登录匹歪」
+      return;
+    }
+    // 准备阶段（开窗口 / 重启浏览器）正常十几秒内就过去了，超过 ~100 秒还没动静
+    // 基本就是卡住了。把按钮放开，让用户至少能再点一次 —— 后端按线程判忙，
+    // 真卡住（线程已经没了）时会直接重来，不会再像上一版那样一直被告知「进行中」。
+    if((s.state==='starting'||s.state==='restarting') && loginTick>66){
+      clearInterval(loginTimer); loginTimer=null;
+      const btn=$('#login'); btn.disabled=false;
+      btn.textContent=LOGIN_TEXT; btn.classList.remove('okbtn');
+      box.className='ltip err';
+      box.textContent='准备时间比预期长，可能卡住了。再点一次「登录匹歪」可以重试；'
+        +'如果反复这样，关掉本程序重开一次。';
     }
   },1500);
 }
@@ -648,9 +723,12 @@ function showRestartPrompt(msg){
     box.className='ltip'; box.innerHTML='';
     box.textContent='正在打开独立的登录窗口（会尽量带上你的登录态和书签）…';
     try{
-      await fetch('/api/login/start',{method:'POST',
+      const r=await fetch('/api/login/start',{method:'POST',
         headers:{'Content-Type':'application/json'},
         body:JSON.stringify({isolated:true})}).then(r=>r.json());
+      if(r && r.ok===false){
+        box.className='ltip err'; box.textContent=r.msg||'打开失败'; refreshLogin(); return;
+      }
       pollLogin();
     }catch(e){
       box.className='ltip err'; box.textContent='打开失败：'+e;
@@ -665,7 +743,10 @@ function showRestartPrompt(msg){
     box.className='ltip'; box.innerHTML='';
     box.textContent='正在关闭并重新打开你的浏览器（标签页可能回不来）…';
     try{
-      await fetch('/api/login/restart',{method:'POST'});
+      const r=await fetch('/api/login/restart',{method:'POST'}).then(r=>r.json());
+      if(r && r.ok===false){
+        box.className='ltip err'; box.textContent=r.msg||'重启失败'; refreshLogin(); return;
+      }
       pollLogin();
     }catch(e){
       box.className='ltip err'; box.textContent='重启失败：'+e;
@@ -904,16 +985,19 @@ class Handler(BaseHTTPRequestHandler):
                     ensure_ascii=False))
             else:
                 self._send(200, json.dumps(
-                    {"ok": False, "msg": "已经有一个登录窗口在进行中，请先完成它"},
+                    {"ok": False, "msg": login_busy_msg()},
                     ensure_ascii=False))
 
         elif path == "/api/login/restart":
             # 把用户自己的浏览器重启到调试模式，然后接着登录。
             # 这一步会关掉他当前所有浏览器窗口，而且实测标签页回不来（Edge 只能强杀），
             # 所以前端必须先跟他确认过再调这里（界面上把它排在无损那条后面）。
-            threading.Thread(target=_restart_then_login, daemon=True).start()
-            self._send(200, json.dumps({"ok": True, "msg": "正在重启浏览器…"},
-                                       ensure_ascii=False))
+            if start_restart_login():
+                self._send(200, json.dumps({"ok": True, "msg": "正在重启浏览器…"},
+                                           ensure_ascii=False))
+            else:
+                self._send(200, json.dumps({"ok": False, "msg": login_busy_msg()},
+                                           ensure_ascii=False))
 
         elif path == "/api/login/browser":
             # 命令行 / 脚本用的：只把浏览器起成可接管状态，不进入登录流程。
